@@ -2,6 +2,8 @@ import os
 import re
 import urllib.request
 
+import tiktoken
+
 url = (
     "https://raw.githubusercontent.com/rasbt/"
     "LLMs-from-scratch/main/ch02/01_main-chapter-code/"
@@ -21,10 +23,11 @@ preprocessed = re.split(r'([,.:;?_!"()\']|--|\s)', raw_text)
 
 preprocessed = [word.strip() for word in preprocessed if word.strip()]
 
-all_words = sorted(set(preprocessed))
-vocab_size = len(all_words)
+all_tokens = sorted(set(preprocessed))
+all_tokens.extend(["$unk$", "$end$"])
+vocab_size = len(all_tokens)
 
-vocab = {token: i for i, token in enumerate(all_words)}
+vocab = {token: i for i, token in enumerate(all_tokens)}
 
 
 class TokenizerV1:
@@ -35,6 +38,11 @@ class TokenizerV1:
     def preproccesor(self, raw_text) -> list[str]:
         preprocessed = re.split(r'([,.:;?_!"()\']|--|\s)', raw_text)
         preprocessed = [word.strip() for word in preprocessed if word.strip()]
+
+        preprocessed = [
+            token if token in self.str_to_int else "$unk$" for token in preprocessed
+        ]
+        preprocessed.append("$end$")
 
         return preprocessed
 
@@ -50,12 +58,20 @@ class TokenizerV1:
         return text
 
 
-tokenizer = TokenizerV1(vocab)
+### Bytepair encoding
+print("\n\n\n\n")
+tokenizer = tiktoken.get_encoding("gpt2")
 
-text = """"It's the last he painted, you know,"
-Mrs. Gisburn said with pardonable pride."""
-ids = tokenizer.encode(text)
-print(ids)
+encoded_text = tokenizer.encode(raw_text, allowed_special={"<|endoftext|>"})
+print(len(encoded_text))
 
-decoded_text = tokenizer.decode(ids)
-print(decoded_text)
+encoded_sample = encoded_text[50:]
+
+context_size = 10
+x = encoded_sample[:context_size]
+y = encoded_sample[1 : context_size + 1]
+
+for i in range(1, context_size + 1):
+    context = encoded_sample[:i]
+    desired = encoded_sample[i]
+    print(tokenizer.decode(context), "->", tokenizer.decode([desired]))

@@ -7,7 +7,9 @@ authors = [
     { name = "sepabonn", email = "sepabonn@unal.edu.co" }
 ]
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "tiktoken>=0.14.0",
+]
 
 [project.scripts]
 llms-from-scratch = "llms_from_scratch:main"
