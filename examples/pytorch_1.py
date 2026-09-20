@@ -1,5 +1,3 @@
-from random import random
-
 import torch
 
 N = 100
