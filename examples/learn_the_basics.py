@@ -7,6 +7,7 @@ from torchvision.transforms import v2
 
 
 def datasets_and_dataloaders():
+
     training_data = datasets.FashionMNIST(
         "data",
         download=True,
