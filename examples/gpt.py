@@ -1,6 +1,6 @@
 # %%
 import torch
-import torch.nn as nn
+from torch import nn
 
 # %%
 config = {
@@ -119,3 +119,44 @@ class FeedForward(nn.Module):
 
     def forward(self, x):
         return self.layer(x)
+
+
+# %%
+class FeedForwardWithShortCut(nn.Module):
+    def __init__(self, layer_sizes, shortcut: bool = False) -> None:
+        super().__init__()
+        self.layers = nn.ModuleList(
+            [
+                nn.Sequential(
+                    nn.Linear(config["dim_emb"], 4 * config["dim_emb"]),
+                    nn.ReLU(),
+                ),
+                nn.Sequential(
+                    nn.Linear(config["dim_emb"], 4 * config["dim_emb"]),
+                    nn.ReLU(),
+                ),
+                nn.Sequential(
+                    nn.Linear(config["dim_emb"], 4 * config["dim_emb"]),
+                    nn.ReLU(),
+                ),
+                nn.Sequential(
+                    nn.Linear(config["dim_emb"], 4 * config["dim_emb"]),
+                    nn.ReLU(),
+                ),
+            ]
+        )
+
+    def forward(self, x):
+
+        for layer in self.layers:
+            out = layer(x)
+
+            if self.shortcut and x.shape == out.shape:
+                x = x + out
+            else:
+                x = out
+
+        return x
+
+
+# %%

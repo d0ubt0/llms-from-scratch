@@ -24,8 +24,8 @@ def datasets_and_dataloaders():
 
 
 def main():
-    device = "cuda" if torch.accelerator.is_available() else "cpu"
-    device = "cpu"
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(device)
     N = 1024 * 16
 
     t1 = time.time()
