@@ -18,12 +18,12 @@ class MultiHeadSelfAttention(nn.Module):
         self.head_dim = head_dim
         self.num_heads = num_heads
 
-        self.wq = nn.Linear(dim_in, head_dim)
-        self.wk = nn.Linear(dim_in, head_dim)
-        self.wv = nn.Linear(dim_in, head_dim)
+        self.wq = nn.Linear(dim_in, num_heads * head_dim)
+        self.wk = nn.Linear(dim_in, num_heads * head_dim)
+        self.wv = nn.Linear(dim_in, num_heads * head_dim)
 
         self.dropout = nn.Dropout(dropout_rate)
-        self.out = nn.Linear(head_dim, dim_in)
+        self.out = nn.Linear(num_heads * head_dim, dim_in)
 
         self.register_buffer(
             "mask", torch.triu(torch.ones(context_length, context_length), diagonal=1)
@@ -46,7 +46,7 @@ class MultiHeadSelfAttention(nn.Module):
             batch_size, num_tokens, self.num_heads, self.head_dim
         ).transpose(1, 2)
 
-        att_scores: Tensor = querys @ keys.t(-2, -1)
+        att_scores: Tensor = querys @ keys.transpose(-2, -1)
 
         mask_bool = self.mask.bool()[:num_tokens, :num_tokens]
 
@@ -59,7 +59,7 @@ class MultiHeadSelfAttention(nn.Module):
             (att_weights @ values)
             .transpose(1, 2)
             .contiguous()
-            .view(batch_size, num_tokens, self.head_dim)
+            .view(batch_size, num_tokens, self.num_heads * self.head_dim)
         )
 
         return self.out(context_vec)
