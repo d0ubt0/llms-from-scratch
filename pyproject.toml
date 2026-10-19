@@ -25,11 +25,3 @@ build-backend = "uv_build"
 typeCheckingMode = "standard"
 venvPath = "."
 venv = ".venv"
-
-[[tool.uv.index]]
-name = "pytorch-rocm"
-url = "https://download.pytorch.org/whl/rocm6.2"
-
-[tool.uv.sources]
-torch = { index = "pytorch-rocm" }
-torchvision = { index = "pytorch-rocm" }
