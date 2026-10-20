@@ -18,17 +18,19 @@ print("W", W, "b", b)
 EPOCHS = 1000
 LR = 0.01
 
+# No error in this file
+
 for epoch in range(EPOCHS):
     y_hat = X @ W + b
     loss_mse = ((y_hat - y_true) ** 2).mean()
     loss_mse.backward()
     if epoch % 10 == 0:
         print("W: ", W, "b: ", b, "loss: ", loss_mse)
-    with torch.no_grad():
-        W -= LR * W.grad
-        b -= LR * b.grad
+    # with torch.no_grad():
+    # W -= LR * W.grad
+    # b -= LR * b.grad
 
-    W.grad.zero_()
-    b.grad.zero_()
+    # W.grad.zero_()
+    # b.grad.zero_()
 
 print("W: ", W, "b: ", b)

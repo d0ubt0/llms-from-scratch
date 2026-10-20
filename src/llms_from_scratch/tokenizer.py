@@ -2,20 +2,25 @@
 from typing import Literal
 
 import tiktoken
+import torch
 from tiktoken import Encoding, get_encoding
-
+from torch import Tensor
 
 # %%
+
+
 class Tokenizer:
     def __init__(self, tokenizer: Encoding) -> None:
         self.tokenizer = tokenizer
 
-    def decode(self, tokens: list[int]) -> str:
-        out = self.tokenizer.decode(tokens)
+    def decode(self, tokens: Tensor) -> str:
+        flat = tokens.flatten()
+        out = self.tokenizer.decode(flat.tolist())
         return out
 
-    def encode(self, string: str) -> list[int]:
-        out = self.tokenizer.encode(string)
+    def encode(self, string: str) -> Tensor:
+        out = self.tokenizer.encode(string, allowed_special={"<|endoftext|>"})
+        out = torch.tensor(out).unsqueeze(0)
         return out
 
 
@@ -23,17 +28,3 @@ class Tokenizer:
 def get_tokenizer(name_tokenizer: Literal["gpt2"]) -> Tokenizer:
     t = tiktoken.get_encoding(name_tokenizer)
     return Tokenizer(t)
-
-
-# %%
-
-if __name__ == "__main__":
-    encoder = get_encoding("gpt2")
-    test = "aura chicos aura"
-
-    tokenizer = Tokenizer(encoder)
-
-    tokens = tokenizer.encode(test)
-    print("tokens:", tokens)
-    decoded = tokenizer.decode(tokens)
-    print("decode tokens:", decoded)
