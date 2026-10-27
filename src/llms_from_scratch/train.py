@@ -1,0 +1,426 @@
+"""Entrenamiento sencillo del LLM.
+
+Uso local (CPU o CUDA):
+    uv run python -m llms_from_scratch.train --data data/messages.json
+
+En Colab con TPU:
+    !pip install torch_xla
+    %env PJRT_DEVICE=TPU
+    !python -m llms_from_scratch.train --device xla --data data/messages.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import os
+import random
+import time
+from pathlib import Path
+
+import pandas as pd
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader
+
+from llms_from_scratch.config import Config, get_config
+from llms_from_scratch.data import LLMDataset
+from llms_from_scratch.llm import LLM
+from llms_from_scratch.tokenizer import Tokenizer, get_tokenizer
+
+# Se rellenan solo cuando se entrena en TPU (torch_xla).
+XM = None
+PL = None
+
+CONFIG_KEYS = (
+    "emb_dim",
+    "vocab_size",
+    "ff_dim_multiplier",
+    "layers",
+    "att_heads",
+    "context_length",
+    "drop_rate",
+    "qkv_bias",
+)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Entrena el LLM desde cero")
+
+    parser.add_argument("--data", type=Path, default=Path("data/messages.json"))
+    parser.add_argument(
+        "--config", choices=["micro", "small", "conventional"], default="micro"
+    )
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--batch-size", type=int, default=4)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--weight-decay", type=float, default=0.1)
+    parser.add_argument("--grad-clip", type=float, default=1.0)
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=0,
+        help="Solapamiento entre ventanas (0 = igual al context_length)",
+    )
+    parser.add_argument("--val-frac", type=float, default=0.1)
+    parser.add_argument("--warmup", type=int, default=100)
+    parser.add_argument("--out-dir", type=Path, default=Path("checkpoints"))
+    parser.add_argument(
+        "--device",
+        choices=["auto", "cpu", "cuda", "xla"],
+        default="auto",
+        help="xla = TPU de Colab",
+    )
+    parser.add_argument("--resume", type=Path, default=None)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--num-workers", type=int, default=0)
+    parser.add_argument("--log-every", type=int, default=10)
+    return parser.parse_args()
+
+
+def is_tpu_environment() -> bool:
+    return any(
+        var in os.environ for var in ("PJRT_DEVICE", "COLAB_TPU_ADDR", "TPU_NAME")
+    )
+
+
+def setup_device(requested: str) -> tuple[torch.device, bool]:
+    global XM, PL
+
+    if requested == "auto":
+        if torch.cuda.is_available():
+            requested = "cuda"
+        elif is_tpu_environment():
+            requested = "xla"
+        else:
+            requested = "cpu"
+
+    if requested == "xla":
+        import torch_xla.core.xla_model as xm
+        import torch_xla.distributed.parallel_loader as pl
+
+        XM, PL = xm, pl
+        device = xm.xla_device()
+        print(f"Dispositivo: TPU ({device})")
+        return device, True
+
+    if requested == "cuda" and not torch.cuda.is_available():
+        raise SystemExit("Pediste --device cuda, pero CUDA no está disponible.")
+
+    device = torch.device(requested)
+    print(f"Dispositivo: {device}")
+    return device, False
+
+
+def load_text(path: Path) -> str:
+    path = Path(path)
+    if not path.exists():
+        raise SystemExit(
+            f"No existe {path}. Genera el dataset primero "
+            "(por ejemplo con llms_from_scratch.cleaning_data)."
+        )
+
+    suffix = path.suffix.lower()
+    if suffix in {".txt", ".text"}:
+        return path.read_text(encoding="utf-8")
+
+    if suffix == ".csv":
+        df = pd.read_csv(path)
+    elif suffix == ".json":
+        df = pd.read_json(path)
+    else:
+        raise SystemExit(f"Formato no soportado: {suffix}. Usa .txt, .csv o .json.")
+
+    column = "Contents" if "Contents" in df.columns else df.columns[0]
+    messages = df[column].dropna().astype(str).str.strip()
+    messages = messages[messages != ""]
+
+    # <|endoftext|> separa los mensajes para que el modelo no los una.
+    return "\n<|endoftext|>\n".join(messages)
+
+
+def build_loaders(
+    args: argparse.Namespace,
+    tokenizer: Tokenizer,
+    config: Config,
+    device: torch.device,
+    use_xla: bool,
+) -> tuple[DataLoader, DataLoader | None, int]:
+    text = load_text(args.data)
+    if not text:
+        raise SystemExit(f"{args.data} está vacío.")
+
+    split = int(len(text) * (1 - args.val_frac))
+    train_text, val_text = text[:split], text[split:]
+
+    stride = args.stride or config.context_length
+    train_dataset = LLMDataset.from_text(
+        train_text, tokenizer, config.context_length, stride
+    )
+    if len(train_dataset) == 0:
+        raise SystemExit(
+            "El split de train es más corto que context_length. "
+            "Usa más datos o baja la configuración."
+        )
+
+    drop_last = len(train_dataset) >= args.batch_size
+    steps_per_epoch = len(train_dataset) // args.batch_size if drop_last else 1
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        drop_last=drop_last,
+        num_workers=args.num_workers,
+    )
+
+    val_loader = None
+    val_dataset = LLMDataset.from_text(
+        val_text, tokenizer, config.context_length, stride
+    )
+    if len(val_dataset) > 0:
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            drop_last=False,
+            num_workers=args.num_workers,
+        )
+    else:
+        print("Aviso: el split de validación es muy pequeño; se omite la validación.")
+
+    print(
+        f"Tokens: {len(train_dataset.tokens):,} train | "
+        f"{len(val_dataset.tokens):,} val | "
+        f"ventanas: {len(train_dataset):,} | "
+        f"pasos por época: {steps_per_epoch:,}"
+    )
+
+    if use_xla:
+        train_loader = PL.MpDeviceLoader(train_loader, device)
+        if val_loader is not None:
+            val_loader = PL.MpDeviceLoader(val_loader, device)
+
+    return train_loader, val_loader, steps_per_epoch
+
+
+def make_scheduler(
+    optimizer: torch.optim.Optimizer,
+    warmup_steps: int,
+    total_steps: int,
+    min_lr_ratio: float = 0.1,
+) -> torch.optim.lr_scheduler.LambdaLR:
+    def lr_lambda(step: int) -> float:
+        if warmup_steps > 0 and step < warmup_steps:
+            return (step + 1) / warmup_steps
+
+        progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+        progress = min(1.0, progress)
+        cosine = 0.5 * (1 + math.cos(math.pi * progress))
+        return min_lr_ratio + (1 - min_lr_ratio) * cosine
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+def config_to_dict(config: Config) -> dict:
+    return {key: getattr(config, key) for key in CONFIG_KEYS}
+
+
+def save_checkpoint(
+    path: Path,
+    model: LLM,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LambdaLR,
+    config: Config,
+    epoch: int,
+    step: int,
+    val_loss: float,
+    best_val: float,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    state = {
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "config": config_to_dict(config),
+        "epoch": epoch,
+        "step": step,
+        "val_loss": val_loss,
+        "best_val": best_val,
+    }
+
+    if XM is not None:
+        XM.save(state, str(path))
+    else:
+        torch.save(state, path)
+
+
+def load_checkpoint(
+    path: Path,
+    model: LLM,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LambdaLR,
+) -> tuple[int, int, float]:
+    checkpoint = torch.load(path, map_location="cpu")
+
+    model.load_state_dict(checkpoint["model"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    if "scheduler" in checkpoint:
+        scheduler.load_state_dict(checkpoint["scheduler"])
+
+    start_epoch = checkpoint.get("epoch", -1) + 1
+    step = checkpoint.get("step", 0)
+    best_val = checkpoint.get("best_val", float("inf"))
+    print(
+        f"Reanudando desde {path} "
+        f"(siguiente época: {start_epoch + 1}, paso {step:,})"
+    )
+    return start_epoch, step, best_val
+
+
+@torch.no_grad()
+def evaluate(
+    model: LLM,
+    loader: DataLoader,
+    device: torch.device,
+    use_xla: bool,
+) -> float:
+    model.eval()
+    total_loss = torch.zeros((), device=device)
+    batches = 0
+
+    for x, y in loader:
+        if not use_xla:
+            x, y = x.to(device), y.to(device)
+
+        logits = model(x)
+        loss = F.cross_entropy(logits.flatten(0, 1), y.flatten())
+
+        total_loss += loss.detach()
+        batches += 1
+
+    model.train()
+    return (total_loss / max(1, batches)).item()
+
+
+def train(args: argparse.Namespace) -> None:
+    torch.manual_seed(args.seed)
+    random.seed(args.seed)
+
+    device, use_xla = setup_device(args.device)
+
+    tokenizer = get_tokenizer("gpt2")
+    config = get_config(args.config)
+    print(config)
+
+    train_loader, val_loader, steps_per_epoch = build_loaders(
+        args, tokenizer, config, device, use_xla
+    )
+
+    model = LLM(config).to(device)
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"Parámetros: {num_params:,}")
+
+    optimizer = torch.optim.AdamW(
+        model.parameters(), lr=args.lr, weight_decay=args.weight_decay
+    )
+
+    total_steps = max(1, steps_per_epoch * args.epochs)
+    warmup_steps = min(args.warmup, total_steps)
+    scheduler = make_scheduler(optimizer, warmup_steps, total_steps)
+
+    start_epoch, global_step, best_val = 0, 0, float("inf")
+    if args.resume is not None:
+        start_epoch, global_step, best_val = load_checkpoint(
+            args.resume, model, optimizer, scheduler
+        )
+
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    for epoch in range(start_epoch, args.epochs):
+        model.train()
+        epoch_loss = torch.zeros((), device=device)
+        start = time.perf_counter()
+
+        for step, (x, y) in enumerate(train_loader):
+            if not use_xla:
+                x, y = x.to(device), y.to(device)
+
+            optimizer.zero_grad(set_to_none=True)
+
+            logits = model(x)
+            loss = F.cross_entropy(logits.flatten(0, 1), y.flatten())
+
+            loss.backward()
+            if args.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+
+            if use_xla:
+                XM.optimizer_step(optimizer)
+                XM.mark_step()
+            else:
+                optimizer.step()
+
+            scheduler.step()
+            global_step += 1
+            epoch_loss += loss.detach()
+
+            if args.log_every > 0 and (step + 1) % args.log_every == 0:
+                mean_loss = (epoch_loss / (step + 1)).item()
+                lr = scheduler.get_last_lr()[0]
+                elapsed = time.perf_counter() - start
+                print(
+                    f"  época {epoch + 1}/{args.epochs} | "
+                    f"paso {step + 1}/{steps_per_epoch} | "
+                    f"loss {mean_loss:.4f} | lr {lr:.2e} | {elapsed:.1f}s"
+                )
+
+        train_loss = (epoch_loss / max(1, steps_per_epoch)).item()
+
+        val_loss = float("nan")
+        if val_loader is not None:
+            val_loss = evaluate(model, val_loader, device, use_xla)
+
+        is_best = val_loader is not None and val_loss < best_val
+        if is_best:
+            best_val = val_loss
+
+        save_checkpoint(
+            args.out_dir / "last.pt",
+            model,
+            optimizer,
+            scheduler,
+            config,
+            epoch,
+            global_step,
+            val_loss,
+            best_val,
+        )
+        if is_best:
+            save_checkpoint(
+                args.out_dir / "best.pt",
+                model,
+                optimizer,
+                scheduler,
+                config,
+                epoch,
+                global_step,
+                val_loss,
+                best_val,
+            )
+
+        if val_loader is not None:
+            ppl = math.exp(val_loss) if val_loss < 20 else float("inf")
+            print(
+                f"Época {epoch + 1}/{args.epochs} | train loss {train_loss:.4f} | "
+                f"val loss {val_loss:.4f} | val ppl {ppl:.2f}"
+                + (" | mejor" if is_best else "")
+            )
+        else:
+            print(f"Época {epoch + 1}/{args.epochs} | train loss {train_loss:.4f}")
+
+    print(f"Listo. Checkpoints en {args.out_dir} (last.pt y best.pt)")
+
+
+if __name__ == "__main__":
+    train(parse_args())

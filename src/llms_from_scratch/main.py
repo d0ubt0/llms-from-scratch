@@ -23,12 +23,12 @@ def main():
     tokenizer = get_tokenizer("gpt2")
 
     text = "How are you"
-    inputs = tokenizer.encode(text)
+    inputs = torch.tensor(tokenizer.encode(text)).unsqueeze(0)
 
     llm = LLM(config)
 
     generated = generate_tokens(llm, inputs, context_size=15)
-    print(tokenizer.decode(generated))
+    print(tokenizer.decode(generated.flatten().tolist()))
 
 
 # %%
