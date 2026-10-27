@@ -95,6 +95,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-chars", type=int, default=50_000)
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--page-size", type=int, default=32)
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=10,
+        help="Muestra el progreso cada N libros descargados",
+    )
+    parser.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Muestra una línea por cada libro (OK/ERROR)",
+    )
     return parser.parse_args()
 
 
@@ -127,6 +139,8 @@ def fetch_books(max_books: int, page_size: int) -> list[dict]:
             break
 
         books.extend(results)
+        print(f"  página {page}: {len(books)} candidatos", flush=True)
+
         if payload.get("next") is None:
             break
         page += 1
@@ -156,21 +170,24 @@ def decode(raw: bytes) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def download_book(book: dict) -> tuple[dict, str | None]:
+def download_book(
+    book: dict,
+) -> tuple[dict, str | None, int, str | None]:
+    """Devuelve (libro, texto, bytes, error)."""
     url = pick_text_url(book.get("formats", {}))
     if url is None:
-        return book, None
+        return book, None, 0, "sin formato de texto plano"
 
     last_error: Exception | None = None
     for attempt in range(3):
         try:
-            return book, decode(http_get(url))
+            raw = http_get(url)
+            return book, decode(raw), len(raw), None
         except (urllib.error.URLError, OSError) as exc:
             last_error = exc
             time.sleep(1.5 * (attempt + 1))
 
-    print(f"  aviso: fallo {book['id']}: {last_error}", file=sys.stderr)
-    return book, None
+    return book, None, 0, str(last_error) or "error desconocido"
 
 
 def strip_gutenberg(text: str) -> str:
@@ -205,29 +222,70 @@ def main() -> None:
 
     print(f"Buscando hasta {args.max_books} libros en español...")
     books = fetch_books(args.max_books, args.page_size)
-    print(f"Candidatos: {len(books)}")
+    if not books:
+        raise SystemExit("Gutendex no devolvió ningún libro.")
+
+    total = len(books)
+    print(f"Candidatos: {total}")
+    print(f"Descargando con {args.workers} workers...\n")
 
     downloaded: list[tuple[dict, str]] = []
     failures = 0
+    downloaded_bytes = 0
+    report_every = max(args.progress_every, 25) if args.verbose else args.progress_every
+    started = time.perf_counter()
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = [executor.submit(download_book, book) for book in books]
         for index, future in enumerate(as_completed(futures), start=1):
+            book: dict = {}
+            text: str | None
+            size: int
+            error: str | None
+
             try:
-                book, raw = future.result()
+                book, text, size, error = future.result()
             except Exception as exc:  # noqa: BLE001 - una descarga no debe romper todo
-                print(f"  aviso: descarga inesperada: {exc}", file=sys.stderr)
-                failures += 1
-                continue
+                text, size, error = None, 0, f"inesperado: {exc}"
 
-            if raw is None:
+            title = str(book.get("title", "?"))[:55]
+            book_id = book.get("id", "?")
+
+            if text is None:
                 failures += 1
+                print(
+                    f"[{index:>4}/{total}] ERROR id={book_id} | {title} | {error}",
+                    flush=True,
+                )
             else:
-                downloaded.append((book, raw))
-            if index % 25 == 0:
-                print(f"  descargados {index}/{len(futures)}...")
+                downloaded.append((book, text))
+                downloaded_bytes += size
+                if args.verbose:
+                    print(
+                        f"[{index:>4}/{total}] OK    id={book_id:>6} | "
+                        f"{title:<55} | {size / 1_000_000:6.2f} MB",
+                        flush=True,
+                    )
 
-    print(f"Descargados: {len(downloaded)} | fallos: {failures}")
+            if index % report_every == 0 or index == total:
+                elapsed = time.perf_counter() - started
+                rate = downloaded_bytes / elapsed / 1_000_000 if elapsed else 0.0
+                eta = (elapsed / index) * (total - index) if index else 0.0
+                line = (
+                    f"Progreso {index}/{total} ({100 * index / total:5.1f}%) | "
+                    f"{downloaded_bytes / 1_000_000:7.1f} MB | "
+                    f"{rate:5.2f} MB/s | fallos {failures} | "
+                    f"ETA {eta:4.0f}s | último: {title}"
+                )
+                if sys.stdout.isatty() and not args.verbose:
+                    print("\r" + line[:160].ljust(160), end="", flush=True)
+                else:
+                    print(line, flush=True)
+
+    if sys.stdout.isatty() and not args.verbose:
+        print()
+
+    print(f"\nDescargados: {len(downloaded)} | fallos: {failures}")
 
     kept: list[str] = []
     seen: set[str] = set()
