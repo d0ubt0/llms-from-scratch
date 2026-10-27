@@ -7,6 +7,9 @@ separando cada libro con <|endoftext|>.
 Uso:
     uv run python scripts/download_corpus.py
     uv run python scripts/download_corpus.py --target-chars 25_000_000
+
+Si Gutendex no responde, usa automáticamente el catálogo oficial de
+Gutenberg. También se puede forzar con --source catalog.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 API_URL = "https://gutendex.com/books?languages=es&page={page}"
+CATALOG_URL = "https://www.gutenberg.org/cache/epub/feeds/pg_catalog.csv"
 USER_AGENT = "llms-from-scratch/0.1 (corpus builder)"
 SEPARATOR = "\n<|endoftext|>\n"
 
@@ -96,6 +100,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--page-size", type=int, default=32)
     parser.add_argument(
+        "--source",
+        choices=["auto", "gutendex", "catalog"],
+        default="auto",
+        help="auto = Gutendex y, si falla, catálogo oficial de Gutenberg",
+    )
+    parser.add_argument(
+        "--catalog-cache",
+        type=Path,
+        default=Path("data/pg_catalog.csv"),
+        help="Dónde guardar/reutilizar el catálogo (~21 MB)",
+    )
+    parser.add_argument(
         "--progress-every",
         type=int,
         default=10,
@@ -123,16 +139,16 @@ def fetch_books(max_books: int, page_size: int) -> list[dict]:
     while len(books) < max_books:
         url = API_URL.format(page=page)
         payload = None
-        for attempt in range(3):
+        for attempt in range(2):
             try:
-                payload = json.loads(http_get(url, timeout=45).decode("utf-8"))
+                payload = json.loads(http_get(url, timeout=20).decode("utf-8"))
                 break
             except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
-                if attempt == 2:
-                    raise SystemExit(
+                if attempt == 1:
+                    raise RuntimeError(
                         f"No se pudo consultar Gutendex: {exc}"
                     ) from exc
-                time.sleep(2 * (attempt + 1))
+                time.sleep(2)
 
         results = payload.get("results", [])
         if not results:
@@ -146,6 +162,107 @@ def fetch_books(max_books: int, page_size: int) -> list[dict]:
         page += 1
 
     return books[:max_books]
+
+
+def download_catalog(cache_path: Path) -> Path:
+    if cache_path.exists() and cache_path.stat().st_size > 1_000_000:
+        size = cache_path.stat().st_size / 1_000_000
+        print(f"Usando catálogo en caché: {cache_path} ({size:.1f} MB)")
+        return cache_path
+
+    print("Descargando catálogo de Gutenberg (~21 MB)...", flush=True)
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    last_error: Exception | None = None
+
+    for attempt in range(3):
+        try:
+            request = urllib.request.Request(
+                CATALOG_URL, headers={"User-Agent": USER_AGENT}
+            )
+            with urllib.request.urlopen(request, timeout=120) as response:
+                total = int(response.headers.get("Content-Length") or 0)
+                data = bytearray()
+                next_report = 5_000_000
+
+                while True:
+                    chunk = response.read(1 << 20)
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+
+                    if len(data) >= next_report or (total and len(data) >= total):
+                        if total:
+                            message = (
+                                f"  catálogo {len(data) / 1e6:.1f}/"
+                                f"{total / 1e6:.1f} MB"
+                            )
+                        else:
+                            message = f"  catálogo {len(data) / 1e6:.1f} MB"
+
+                        if sys.stdout.isatty():
+                            print("\r" + message, end="", flush=True)
+                        else:
+                            print(message, flush=True)
+                        next_report += 5_000_000
+
+            if total and len(data) < total:
+                raise OSError(f"descarga incompleta ({len(data)}/{total} bytes)")
+
+            tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+            tmp_path.write_bytes(data)
+            tmp_path.replace(cache_path)
+
+            if sys.stdout.isatty():
+                print()
+            print(f"Catálogo descargado: {len(data) / 1e6:.1f} MB")
+            return cache_path
+        except (urllib.error.URLError, OSError) as exc:
+            last_error = exc
+            print(
+                f"  reintento catálogo {attempt + 1}/3: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            time.sleep(2 * (attempt + 1))
+
+    raise SystemExit(f"No se pudo descargar el catálogo: {last_error}")
+
+
+def fetch_books_from_catalog(max_books: int, cache_path: Path) -> list[dict]:
+    import pandas as pd
+
+    catalog_path = download_catalog(cache_path)
+    df = pd.read_csv(catalog_path, dtype=str).fillna("")
+
+    def has_spanish(value: str) -> bool:
+        return "es" in {part.strip() for part in re.split(r"[;,|]", value)}
+
+    df = df[df["Language"].map(has_spanish) & (df["Type"] == "Text")]
+
+    books: list[dict] = []
+    for row in df.to_dict("records"):
+        if len(books) >= max_books:
+            break
+
+        raw_id = str(row.get("Text#", "")).strip()
+        title = str(row.get("Title", "")).strip()
+        if not raw_id.isdigit() or not title:
+            continue
+
+        book_id = int(raw_id)
+        url = (
+            f"https://www.gutenberg.org/cache/epub/{book_id}/pg{book_id}.txt"
+        )
+        books.append(
+            {
+                "id": book_id,
+                "title": title,
+                "formats": {"text/plain; charset=utf-8": url},
+            }
+        )
+
+    print(f"Catálogo: {len(df):,} libros en español; usando {len(books)}")
+    return books
 
 
 def pick_text_url(formats: dict[str, str]) -> str | None:
@@ -220,10 +337,23 @@ def looks_spanish(text: str) -> bool:
 def main() -> None:
     args = parse_args()
 
-    print(f"Buscando hasta {args.max_books} libros en español...")
-    books = fetch_books(args.max_books, args.page_size)
+    books: list[dict] = []
+
+    if args.source in ("auto", "gutendex"):
+        print(f"Buscando hasta {args.max_books} libros en español...")
+        try:
+            books = fetch_books(args.max_books, args.page_size)
+        except RuntimeError as exc:
+            if args.source == "gutendex":
+                raise SystemExit(str(exc)) from exc
+            print(f"Aviso: {exc}")
+            print("Usando el catálogo oficial de Gutenberg...")
+
     if not books:
-        raise SystemExit("Gutendex no devolvió ningún libro.")
+        books = fetch_books_from_catalog(args.max_books, args.catalog_cache)
+
+    if not books:
+        raise SystemExit("No se encontraron libros en español.")
 
     total = len(books)
     print(f"Candidatos: {total}")
