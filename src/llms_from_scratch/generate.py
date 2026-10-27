@@ -46,7 +46,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Elige siempre el token más probable (ignora temperature/top-k)",
     )
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Semilla para reproducibilidad (por defecto, aleatoria en cada ejecución)",
+    )
     return parser.parse_args()
 
 
@@ -166,7 +171,8 @@ def generate(
 
 def main() -> None:
     args = parse_args()
-    torch.manual_seed(args.seed)
+    if args.seed is not None:
+        torch.manual_seed(args.seed)
 
     device, xm = setup_device(args.device)
     checkpoint_path = resolve_checkpoint(args.checkpoint)

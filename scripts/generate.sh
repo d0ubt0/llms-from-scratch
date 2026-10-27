@@ -12,6 +12,7 @@
 #   MAX_NEW_TOKENS   tokens a generar   (200)
 #   TEMPERATURE      temperatura        (0.8)
 #   TOP_K            top-k              (40)
+#   SEED             semilla            (vacío = aleatoria)
 #   USE_UV           1 usa uv, 0 usa python   (1)
 
 set -euo pipefail
@@ -32,7 +33,7 @@ fi
 
 if [[ $# -eq 0 ]]; then
     echo "Uso: ./scripts/generate.sh \"tu prompt\" [opciones]" >&2
-    echo "Opciones: --checkpoint --device --max-new-tokens --temperature --top-k --greedy" >&2
+    echo "Opciones: --checkpoint --device --max-new-tokens --temperature --top-k --seed --greedy" >&2
     exit 1
 fi
 
@@ -48,9 +49,14 @@ DEVICE="${DEVICE:-auto}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-200}"
 TEMPERATURE="${TEMPERATURE:-0.8}"
 TOP_K="${TOP_K:-40}"
+SEED="${SEED:-}"
 
 if [[ -n "$CHECKPOINT" ]]; then
     set -- --checkpoint "$CHECKPOINT" "$@"
+fi
+
+if [[ -n "$SEED" ]]; then
+    set -- --seed "$SEED" "$@"
 fi
 
 exec "${RUNNER[@]}" -m llms_from_scratch.generate \
