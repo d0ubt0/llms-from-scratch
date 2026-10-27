@@ -34,3 +34,4 @@ echo
 echo "Entorno listo."
 echo "Entrenar en CPU/CUDA:  ./scripts/train.sh --epochs 1"
 echo "Entrenar en TPU:       ./scripts/train_tpu.sh --epochs 1"
+echo "Generar texto:         ./scripts/generate.sh \"En un lugar de la Mancha\""
