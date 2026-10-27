@@ -8,3 +8,7 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Corpus grande generado con scripts/download_corpus.py
+data/corpus_es.txt
+data/corpus_*.txt
