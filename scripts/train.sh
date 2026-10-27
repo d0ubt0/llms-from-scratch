@@ -42,13 +42,8 @@ else
     fi
 fi
 
-if [[ ! -f "$DATA" ]]; then
-    echo "Error: no existe el dataset '$DATA'." >&2
-    exit 1
-fi
-
-echo "Entrenando con data=$DATA config=$CONFIG device=$DEVICE epochs=$EPOCHS"
-
+# Los valores efectivos (incluidos los flags pasados en "$@") los imprime
+# train.py después de parsear los argumentos.
 exec "${RUNNER[@]}" -m llms_from_scratch.train \
     --data "$DATA" \
     --config "$CONFIG" \

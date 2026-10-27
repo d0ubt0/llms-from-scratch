@@ -313,6 +313,13 @@ def train(args: argparse.Namespace) -> None:
 
     tokenizer = get_tokenizer("gpt2")
     config = get_config(args.config)
+
+    print(f"Datos: {args.data}")
+    print(
+        f"Config: {args.config} | épocas: {args.epochs} | "
+        f"batch: {args.batch_size} | lr: {args.lr} | "
+        f"checkpoints: {args.out_dir}"
+    )
     print(config)
 
     train_loader, val_loader, steps_per_epoch = build_loaders(
