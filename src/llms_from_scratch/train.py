@@ -49,7 +49,9 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--data", type=Path, default=Path("data/messages.json"))
     parser.add_argument(
-        "--config", choices=["micro", "small", "conventional"], default="micro"
+        "--config",
+        choices=["micro", "t4", "small", "conventional"],
+        default="micro",
     )
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=4)

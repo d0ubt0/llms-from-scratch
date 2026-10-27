@@ -34,7 +34,7 @@ class Config:
 
 
 def get_config(
-    model_size: Literal["micro", "small", "conventional"] = "small",
+    model_size: Literal["micro", "t4", "small", "conventional"] = "small",
 ) -> Config:
     configs = {
         "micro": {
@@ -43,6 +43,17 @@ def get_config(
             "ff_dim_multiplier": 4,
             "layers": 4,
             "att_heads": 4,
+            "context_length": 256,
+            "drop_rate": 0.1,
+            "qkv_bias": True,
+        },
+        # Punto medio para una GPU T4 (16 GB): ~30M parámetros.
+        "t4": {
+            "emb_dim": 256,
+            "vocab_size": 50_257,
+            "ff_dim_multiplier": 4,
+            "layers": 6,
+            "att_heads": 8,
             "context_length": 256,
             "drop_rate": 0.1,
             "qkv_bias": True,
