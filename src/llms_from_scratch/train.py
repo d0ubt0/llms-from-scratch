@@ -1,7 +1,7 @@
 """Entrenamiento sencillo del LLM.
 
 Uso local (CPU o CUDA):
-    uv run python -m llms_from_scratch.train --data data/messages.json
+    uv run python -m llms_from_scratch.train --data data/don_quijote.txt
 
 En Colab (no reinstales torch: Colab ya trae el suyo optimizado):
     !bash scripts/train.sh --epochs 3          # GPU o CPU
@@ -50,7 +50,7 @@ CONFIG_KEYS = (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Entrena el LLM desde cero")
 
-    parser.add_argument("--data", type=Path, default=Path("data/messages.json"))
+    parser.add_argument("--data", type=Path, default=Path("data/don_quijote.txt"))
     parser.add_argument(
         "--config",
         choices=["micro", "t4", "small", "conventional"],
