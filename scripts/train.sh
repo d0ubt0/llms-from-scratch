@@ -6,7 +6,8 @@
 #   ./scripts/train.sh --epochs 3 --batch-size 8
 #
 # Variables de entorno (opcionales):
-#   DATA        corpus de entrenamiento   (data/don_quijote.txt)
+#   DATA        corpus de entrenamiento   (data/corpus_es.txt si existe;
+#                                           si no, data/don_quijote.txt)
 #   CONFIG      micro | small             (micro)
 #   DEVICE      auto | cpu | cuda | xla   (auto)
 #   EPOCHS      número de épocas          (1)
@@ -24,7 +25,15 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-DATA="${DATA:-data/don_quijote.txt}"
+DATA="${DATA:-}"
+if [[ -z "$DATA" ]]; then
+    # Si se descargó el corpus grande, entrenamos con él por defecto.
+    if [[ -f "$ROOT/data/corpus_es.txt" ]]; then
+        DATA="data/corpus_es.txt"
+    else
+        DATA="data/don_quijote.txt"
+    fi
+fi
 CONFIG="${CONFIG:-micro}"
 DEVICE="${DEVICE:-auto}"
 EPOCHS="${EPOCHS:-1}"

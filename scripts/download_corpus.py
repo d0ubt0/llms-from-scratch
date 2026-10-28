@@ -88,7 +88,7 @@ def parse_args() -> argparse.Namespace:
         "--target-chars",
         type=int,
         default=25_000_000,
-        help="Tamaño objetivo del corpus en caracteres",
+        help="Tamaño objetivo del corpus en caracteres (0 = sin límite)",
     )
     parser.add_argument(
         "--max-books",
@@ -357,6 +357,10 @@ def main() -> None:
 
     total = len(books)
     print(f"Candidatos: {total}")
+    print(
+        f"Objetivo: {args.target_chars:,} caracteres"
+        + (" (sin límite)" if args.target_chars <= 0 else "")
+    )
     print(f"Descargando con {args.workers} workers...\n")
 
     downloaded: list[tuple[dict, str]] = []
@@ -421,8 +425,10 @@ def main() -> None:
     seen: set[str] = set()
     total_chars = 0
     skipped_short = skipped_title = skipped_lang = skipped_dup = 0
+    remaining_books = 0
 
-    for book, raw in sorted(downloaded, key=lambda item: item[0]["id"]):
+    ordered = sorted(downloaded, key=lambda item: item[0]["id"])
+    for index, (book, raw) in enumerate(ordered):
         title = book.get("title", "").lower()
         if any(keyword in title for keyword in SKIP_TITLE):
             skipped_title += 1
@@ -446,7 +452,8 @@ def main() -> None:
         kept.append(text)
         total_chars += len(text)
 
-        if total_chars >= args.target_chars:
+        if args.target_chars > 0 and total_chars >= args.target_chars:
+            remaining_books = len(ordered) - index - 1
             break
 
     if not kept:
@@ -464,6 +471,16 @@ def main() -> None:
     print(f"Descartados: cortos={skipped_short} título={skipped_title} "
           f"idioma={skipped_lang} duplicados={skipped_dup}")
     print(f"Caracteres: {len(corpus):,}")
+
+    if remaining_books > 0:
+        print(
+            f"Aviso: se alcanzó --target-chars ({args.target_chars:,}) y "
+            f"quedaron {remaining_books:,} libros descargados sin usar."
+        )
+        print(
+            "       Subí --target-chars (p. ej. 100_000_000) o usá 0 para "
+            "no limitar el corpus."
+        )
 
     try:
         import tiktoken
