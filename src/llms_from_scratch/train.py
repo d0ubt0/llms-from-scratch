@@ -3,15 +3,18 @@
 Uso local (CPU o CUDA):
     uv run python -m llms_from_scratch.train --data data/messages.json
 
-En Colab con TPU:
-    !pip install torch_xla
-    %env PJRT_DEVICE=TPU
-    !python -m llms_from_scratch.train --device xla --data data/messages.json
+En Colab (no reinstales torch: Colab ya trae el suyo optimizado):
+    !bash scripts/train.sh --epochs 3          # GPU o CPU
+    !bash scripts/train_tpu.sh --epochs 3      # TPU (requiere torch_xla)
+
+En TPU, torch_xla debe ser de la misma versión que torch:
+    %pip install "torch_xla==<version-de-torch>"
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import math
 import os
 import random
@@ -77,6 +80,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=10)
+    parser.add_argument(
+        "--amp",
+        choices=["auto", "off", "bf16", "fp16"],
+        default="auto",
+        help="Precisión mixta en CUDA (auto = bf16 si la GPU lo soporta)",
+    )
     return parser.parse_args()
 
 
@@ -112,6 +121,23 @@ def setup_device(requested: str) -> tuple[torch.device, bool]:
     device = torch.device(requested)
     print(f"Dispositivo: {device}")
     return device, False
+
+
+def setup_amp(requested: str, device: torch.device) -> torch.dtype | None:
+    """Precisión mixta solo en CUDA; CPU y XLA siguen en fp32."""
+    if requested == "off" or device.type != "cuda":
+        return None
+
+    if requested == "auto":
+        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+
+    return torch.bfloat16 if requested == "bf16" else torch.float16
+
+
+def autocast_context(device: torch.device, dtype: torch.dtype | None):
+    if dtype is None:
+        return contextlib.nullcontext()
+    return torch.autocast(device_type=device.type, dtype=dtype)
 
 
 def load_text(path: Path) -> str:
@@ -168,12 +194,15 @@ def build_loaders(
     drop_last = len(train_dataset) >= args.batch_size
     steps_per_epoch = len(train_dataset) // args.batch_size if drop_last else 1
 
+    pin_memory = device.type == "cuda"
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
         shuffle=True,
         drop_last=drop_last,
         num_workers=args.num_workers,
+        pin_memory=pin_memory,
     )
 
     val_loader = None
@@ -187,6 +216,7 @@ def build_loaders(
             shuffle=False,
             drop_last=False,
             num_workers=args.num_workers,
+            pin_memory=pin_memory,
         )
     else:
         print("Aviso: el split de validación es muy pequeño; se omite la validación.")
@@ -286,20 +316,23 @@ def evaluate(
     loader: DataLoader,
     device: torch.device,
     use_xla: bool,
+    amp_dtype: torch.dtype | None = None,
 ) -> float:
     model.eval()
     total_loss = torch.zeros((), device=device)
     batches = 0
 
-    for x, y in loader:
-        if not use_xla:
-            x, y = x.to(device), y.to(device)
+    with autocast_context(device, amp_dtype):
+        for x, y in loader:
+            if not use_xla:
+                x = x.to(device, non_blocking=True)
+                y = y.to(device, non_blocking=True)
 
-        logits = model(x)
-        loss = F.cross_entropy(logits.flatten(0, 1), y.flatten())
+            logits = model(x)
+            loss = F.cross_entropy(logits.flatten(0, 1), y.flatten())
 
-        total_loss += loss.detach()
-        batches += 1
+            total_loss += loss.detach()
+            batches += 1
 
     model.train()
     return (total_loss / max(1, batches)).item()
@@ -311,6 +344,13 @@ def train(args: argparse.Namespace) -> None:
 
     device, use_xla = setup_device(args.device)
 
+    if device.type == "cuda":
+        # TF32 acelera las matmuls en GPUs Ampere o más nuevas de Colab.
+        torch.set_float32_matmul_precision("high")
+
+    amp_dtype = setup_amp(args.amp, device)
+    scaler = torch.amp.GradScaler("cuda", enabled=amp_dtype == torch.float16)
+
     tokenizer = get_tokenizer("gpt2")
     config = get_config(args.config)
 
@@ -320,6 +360,7 @@ def train(args: argparse.Namespace) -> None:
         f"batch: {args.batch_size} | lr: {args.lr} | "
         f"checkpoints: {args.out_dir}"
     )
+    print(f"Precisión: {amp_dtype or 'fp32'}")
     print(config)
 
     train_loader, val_loader, steps_per_epoch = build_loaders(
@@ -353,22 +394,27 @@ def train(args: argparse.Namespace) -> None:
 
         for step, (x, y) in enumerate(train_loader):
             if not use_xla:
-                x, y = x.to(device), y.to(device)
+                x = x.to(device, non_blocking=True)
+                y = y.to(device, non_blocking=True)
 
             optimizer.zero_grad(set_to_none=True)
 
-            logits = model(x)
-            loss = F.cross_entropy(logits.flatten(0, 1), y.flatten())
+            with autocast_context(device, amp_dtype):
+                logits = model(x)
+                loss = F.cross_entropy(logits.flatten(0, 1), y.flatten())
 
-            loss.backward()
+            scaler.scale(loss).backward()
             if args.grad_clip > 0:
+                # Desescala antes de recortar (no-op si AMP está desactivado).
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
 
             if use_xla:
                 XM.optimizer_step(optimizer)
                 XM.mark_step()
             else:
-                optimizer.step()
+                scaler.step(optimizer)
+                scaler.update()
 
             scheduler.step()
             global_step += 1
@@ -388,7 +434,7 @@ def train(args: argparse.Namespace) -> None:
 
         val_loss = float("nan")
         if val_loader is not None:
-            val_loss = evaluate(model, val_loader, device, use_xla)
+            val_loss = evaluate(model, val_loader, device, use_xla, amp_dtype)
 
         is_best = val_loader is not None and val_loss < best_val
         if is_best:

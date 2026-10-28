@@ -12,7 +12,7 @@
 #   EPOCHS      número de épocas          (1)
 #   BATCH_SIZE  tamaño de batch           (4)
 #   OUT_DIR     carpeta de checkpoints    (checkpoints)
-#   USE_UV      1 usa uv, 0 usa python    (1)
+#   USE_UV      1 usa uv, 0 usa python    (1; en Colab siempre se usa python)
 #
 # Ejemplos:
 #   DATA=data/mi_corpus.txt ./scripts/train.sh
@@ -31,7 +31,12 @@ EPOCHS="${EPOCHS:-1}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
 OUT_DIR="${OUT_DIR:-checkpoints}"
 
-if [[ "${USE_UV:-1}" == "1" ]] && command -v uv >/dev/null 2>&1; then
+# En Colab usamos siempre el Python del sistema: ya trae el torch compilado
+# para su GPU/TPU. Si dejáramos que uv cree un .venv, descargaría otro torch.
+if [[ -n "${COLAB_RELEASE_TAG:-}${COLAB_GPU:-}${COLAB_TPU_ADDR:-}" ]]; then
+    export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+    RUNNER=(python)
+elif [[ "${USE_UV:-1}" == "1" ]] && command -v uv >/dev/null 2>&1; then
     RUNNER=(uv run python)
 else
     export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"

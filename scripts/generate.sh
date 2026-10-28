@@ -13,14 +13,18 @@
 #   TEMPERATURE      temperatura        (0.8)
 #   TOP_K            top-k              (40)
 #   SEED             semilla            (vacío = aleatoria)
-#   USE_UV           1 usa uv, 0 usa python   (1)
+#   USE_UV           1 usa uv, 0 usa python   (1; en Colab siempre python)
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-if [[ "${USE_UV:-1}" == "1" ]] && command -v uv >/dev/null 2>&1; then
+# En Colab usamos siempre el Python del sistema (torch ya viene optimizado).
+if [[ -n "${COLAB_RELEASE_TAG:-}${COLAB_GPU:-}${COLAB_TPU_ADDR:-}" ]]; then
+    export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+    RUNNER=(python)
+elif [[ "${USE_UV:-1}" == "1" ]] && command -v uv >/dev/null 2>&1; then
     RUNNER=(uv run python)
 else
     export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
