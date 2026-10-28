@@ -67,7 +67,18 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Solapamiento entre ventanas (0 = igual al context_length)",
     )
-    parser.add_argument("--val-frac", type=float, default=0.1)
+    parser.add_argument(
+        "--val-frac",
+        type=float,
+        default=0.1,
+        help="Fracción para validación (elige el mejor checkpoint)",
+    )
+    parser.add_argument(
+        "--test-frac",
+        type=float,
+        default=0.1,
+        help="Fracción para test (solo se reporta, no elige checkpoint)",
+    )
     parser.add_argument("--warmup", type=int, default=100)
     parser.add_argument("--out-dir", type=Path, default=Path("checkpoints"))
     parser.add_argument(
@@ -79,7 +90,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num-workers", type=int, default=0)
-    parser.add_argument("--log-every", type=int, default=10)
+    parser.add_argument(
+        "--log-every",
+        type=int,
+        default=1000,
+        help="Imprime el estado cada N pasos (0 = desactivado)",
+    )
     parser.add_argument(
         "--amp",
         choices=["auto", "off", "bf16", "fp16"],
@@ -173,57 +189,87 @@ def build_loaders(
     config: Config,
     device: torch.device,
     use_xla: bool,
-) -> tuple[DataLoader, DataLoader | None, int]:
+) -> tuple[DataLoader, DataLoader | None, DataLoader | None, int]:
     text = load_text(args.data)
     if not text:
         raise SystemExit(f"{args.data} está vacío.")
 
-    split = int(len(text) * (1 - args.val_frac))
-    train_text, val_text = text[:split], text[split:]
+    if (
+        args.val_frac < 0
+        or args.test_frac < 0
+        or args.val_frac + args.test_frac >= 1
+    ):
+        raise SystemExit(
+            "--val-frac y --test-frac deben ser >= 0 y sumar menos de 1."
+        )
+
+    # Cortes por caracteres: train | val | test.
+    n = len(text)
+    val_start = int(n * (1 - args.val_frac - args.test_frac))
+    test_start = int(n * (1 - args.test_frac))
+    train_text = text[:val_start]
+    val_text = text[val_start:test_start]
+    test_text = text[test_start:] if args.test_frac > 0 else ""
 
     stride = args.stride or config.context_length
-    train_dataset = LLMDataset.from_text(
-        train_text, tokenizer, config.context_length, stride
-    )
-    if len(train_dataset) == 0:
+
+    def make_dataset(part: str) -> LLMDataset | None:
+        if not part:
+            return None
+        dataset = LLMDataset.from_text(
+            part, tokenizer, config.context_length, stride
+        )
+        return dataset if len(dataset) > 0 else None
+
+    def make_loader(
+        dataset: LLMDataset, shuffle: bool, drop_last: bool
+    ) -> DataLoader:
+        return DataLoader(
+            dataset,
+            batch_size=args.batch_size,
+            shuffle=shuffle,
+            drop_last=drop_last,
+            num_workers=args.num_workers,
+            pin_memory=device.type == "cuda",
+        )
+
+    train_dataset = make_dataset(train_text)
+    if train_dataset is None:
         raise SystemExit(
             "El split de train es más corto que context_length. "
             "Usa más datos o baja la configuración."
         )
 
+    val_dataset = make_dataset(val_text)
+    test_dataset = make_dataset(test_text)
+
     drop_last = len(train_dataset) >= args.batch_size
     steps_per_epoch = len(train_dataset) // args.batch_size if drop_last else 1
 
-    pin_memory = device.type == "cuda"
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=True,
-        drop_last=drop_last,
-        num_workers=args.num_workers,
-        pin_memory=pin_memory,
+    train_loader = make_loader(train_dataset, shuffle=True, drop_last=drop_last)
+    val_loader = (
+        make_loader(val_dataset, shuffle=False, drop_last=False)
+        if val_dataset is not None
+        else None
+    )
+    test_loader = (
+        make_loader(test_dataset, shuffle=False, drop_last=False)
+        if test_dataset is not None
+        else None
     )
 
-    val_loader = None
-    val_dataset = LLMDataset.from_text(
-        val_text, tokenizer, config.context_length, stride
-    )
-    if len(val_dataset) > 0:
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            drop_last=False,
-            num_workers=args.num_workers,
-            pin_memory=pin_memory,
-        )
-    else:
-        print("Aviso: el split de validación es muy pequeño; se omite la validación.")
+    if val_loader is None:
+        print("Aviso: el split de validación es muy pequeño; se omite.")
+    if args.test_frac > 0 and test_loader is None:
+        print("Aviso: el split de test es muy pequeño; se omite.")
+
+    def token_count(dataset: LLMDataset | None) -> int:
+        return len(dataset.tokens) if dataset is not None else 0
 
     print(
-        f"Tokens: {len(train_dataset.tokens):,} train | "
-        f"{len(val_dataset.tokens):,} val | "
+        f"Tokens: {token_count(train_dataset):,} train | "
+        f"{token_count(val_dataset):,} val | "
+        f"{token_count(test_dataset):,} test | "
         f"ventanas: {len(train_dataset):,} | "
         f"pasos por época: {steps_per_epoch:,}"
     )
@@ -232,8 +278,10 @@ def build_loaders(
         train_loader = PL.MpDeviceLoader(train_loader, device)
         if val_loader is not None:
             val_loader = PL.MpDeviceLoader(val_loader, device)
+        if test_loader is not None:
+            test_loader = PL.MpDeviceLoader(test_loader, device)
 
-    return train_loader, val_loader, steps_per_epoch
+    return train_loader, val_loader, test_loader, steps_per_epoch
 
 
 def make_scheduler(
@@ -252,6 +300,10 @@ def make_scheduler(
         return min_lr_ratio + (1 - min_lr_ratio) * cosine
 
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+def perplexity(loss: float) -> float:
+    return math.exp(loss) if loss < 20 else float("inf")
 
 
 def config_to_dict(config: Config) -> dict:
@@ -363,7 +415,7 @@ def train(args: argparse.Namespace) -> None:
     print(f"Precisión: {amp_dtype or 'fp32'}")
     print(config)
 
-    train_loader, val_loader, steps_per_epoch = build_loaders(
+    train_loader, val_loader, test_loader, steps_per_epoch = build_loaders(
         args, tokenizer, config, device, use_xla
     )
 
@@ -421,13 +473,15 @@ def train(args: argparse.Namespace) -> None:
             epoch_loss += loss.detach()
 
             if args.log_every > 0 and (step + 1) % args.log_every == 0:
+                batch_loss = loss.item()
                 mean_loss = (epoch_loss / (step + 1)).item()
                 lr = scheduler.get_last_lr()[0]
                 elapsed = time.perf_counter() - start
                 print(
                     f"  época {epoch + 1}/{args.epochs} | "
                     f"paso {step + 1}/{steps_per_epoch} | "
-                    f"loss {mean_loss:.4f} | lr {lr:.2e} | {elapsed:.1f}s"
+                    f"batch loss {batch_loss:.4f} | "
+                    f"media {mean_loss:.4f} | lr {lr:.2e} | {elapsed:.1f}s"
                 )
 
         train_loss = (epoch_loss / max(1, steps_per_epoch)).item()
@@ -435,6 +489,10 @@ def train(args: argparse.Namespace) -> None:
         val_loss = float("nan")
         if val_loader is not None:
             val_loss = evaluate(model, val_loader, device, use_xla, amp_dtype)
+
+        test_loss = float("nan")
+        if test_loader is not None:
+            test_loss = evaluate(model, test_loader, device, use_xla, amp_dtype)
 
         is_best = val_loader is not None and val_loss < best_val
         if is_best:
@@ -464,15 +522,19 @@ def train(args: argparse.Namespace) -> None:
                 best_val,
             )
 
+        metrics = [
+            f"Época {epoch + 1}/{args.epochs}",
+            f"train loss {train_loss:.4f}",
+        ]
         if val_loader is not None:
-            ppl = math.exp(val_loss) if val_loss < 20 else float("inf")
-            print(
-                f"Época {epoch + 1}/{args.epochs} | train loss {train_loss:.4f} | "
-                f"val loss {val_loss:.4f} | val ppl {ppl:.2f}"
-                + (" | mejor" if is_best else "")
+            metrics.append(
+                f"val loss {val_loss:.4f} | val ppl {perplexity(val_loss):.2f}"
             )
-        else:
-            print(f"Época {epoch + 1}/{args.epochs} | train loss {train_loss:.4f}")
+        if test_loader is not None:
+            metrics.append(
+                f"test loss {test_loss:.4f} | test ppl {perplexity(test_loss):.2f}"
+            )
+        print(" | ".join(metrics) + (" | mejor" if is_best else ""))
 
     print(f"Listo. Checkpoints en {args.out_dir} (last.pt y best.pt)")
 
