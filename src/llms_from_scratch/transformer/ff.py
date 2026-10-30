@@ -6,7 +6,8 @@ class FeedForward(nn.Module):
         super().__init__()
         self.layer = nn.Sequential(
             nn.Linear(in_dim, ff_dim),
-            nn.GELU(),
+            # GPT-2 usa "gelu_new" (aproximación con tanh), no el GELU exacto.
+            nn.GELU(approximate="tanh"),
             nn.Linear(ff_dim, in_dim),
         )
 

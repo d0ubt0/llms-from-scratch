@@ -4,6 +4,7 @@
 # Uso:
 #   ./scripts/generate.sh "En un lugar de la Mancha"
 #   ./scripts/generate.sh "Había una vez" --max-new-tokens 100 --temperature 0.9
+#   ./scripts/generate.sh "Hello, my name is" --pretrained gpt2
 #   ./scripts/generate.sh "Hola" --greedy
 #
 # Variables de entorno (opcionales):
@@ -40,7 +41,7 @@ fi
 
 if [[ $# -eq 0 ]]; then
     echo "Uso: ./scripts/generate.sh \"tu prompt\" [opciones]" >&2
-    echo "Opciones: --checkpoint --device --max-new-tokens --temperature --top-k --seed --greedy" >&2
+    echo "Opciones: --checkpoint --pretrained --device --max-new-tokens --temperature --top-k --seed --greedy" >&2
     exit 1
 fi
 

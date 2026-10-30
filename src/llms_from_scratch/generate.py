@@ -18,6 +18,7 @@ import torch.nn.functional as F
 
 from llms_from_scratch.config import Config
 from llms_from_scratch.llm import LLM
+from llms_from_scratch.pretrained import load_pretrained_gpt2
 from llms_from_scratch.tokenizer import Tokenizer, get_tokenizer
 
 DEFAULT_CHECKPOINT_DIR = Path("checkpoints")
@@ -29,11 +30,21 @@ def parse_args() -> argparse.Namespace:
         description="Genera texto con un modelo entrenado"
     )
     parser.add_argument("prompt", help="Texto inicial a partir del cual generar")
-    parser.add_argument(
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument(
         "--checkpoint",
         type=Path,
         default=None,
         help="Ruta al .pt (por defecto checkpoints/best.pt o last.pt)",
+    )
+    source.add_argument(
+        "--pretrained",
+        nargs="?",
+        const="gpt2",
+        default=None,
+        metavar="MODELO",
+        help="Usa pesos oficiales de Hugging Face en vez de un checkpoint "
+        "(por defecto gpt2; también gpt2-medium, gpt2-large, gpt2-xl)",
     )
     parser.add_argument(
         "--device", choices=["auto", "cpu", "cuda", "xla"], default="auto"
@@ -175,15 +186,22 @@ def main() -> None:
         torch.manual_seed(args.seed)
 
     device, xm = setup_device(args.device)
-    checkpoint_path = resolve_checkpoint(args.checkpoint)
-    model, config, checkpoint = load_model(checkpoint_path, device)
-    tokenizer = get_tokenizer("gpt2")
+    if args.pretrained is not None:
+        model, config = load_pretrained_gpt2(args.pretrained, device=device)
+        print(
+            f"Pesos: {args.pretrained} (Hugging Face) | dispositivo {device}",
+            file=sys.stderr,
+        )
+    else:
+        checkpoint_path = resolve_checkpoint(args.checkpoint)
+        model, config, checkpoint = load_model(checkpoint_path, device)
 
-    epoch = checkpoint.get("epoch", 0) + 1
-    print(
-        f"Checkpoint: {checkpoint_path} | época {epoch} | dispositivo {device}",
-        file=sys.stderr,
-    )
+        epoch = checkpoint.get("epoch", 0) + 1
+        print(
+            f"Checkpoint: {checkpoint_path} | época {epoch} | dispositivo {device}",
+            file=sys.stderr,
+        )
+    tokenizer = get_tokenizer("gpt2")
 
     text = generate(
         model=model,
