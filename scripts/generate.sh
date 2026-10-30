@@ -20,8 +20,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=scripts/_colab.sh
+source "$ROOT/scripts/_colab.sh"
+
 # En Colab usamos siempre el Python del sistema (torch ya viene optimizado).
-if [[ -n "${COLAB_RELEASE_TAG:-}${COLAB_GPU:-}${COLAB_TPU_ADDR:-}" ]]; then
+if is_colab; then
     export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
     RUNNER=(python)
 elif [[ "${USE_UV:-1}" == "1" ]] && command -v uv >/dev/null 2>&1; then

@@ -12,9 +12,12 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=scripts/_colab.sh
+source "$ROOT/scripts/_colab.sh"
+
 # En Colab no creamos un .venv: el runtime ya trae torch compilado para su
 # GPU/TPU y reinstalarlo con uv suele tardar y perder esas optimizaciones.
-if [[ -n "${COLAB_RELEASE_TAG:-}${COLAB_GPU:-}${COLAB_TPU_ADDR:-}" ]]; then
+if is_colab; then
     echo "Colab detectado: se usa el torch preinstalado (sin uv sync)."
     export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 

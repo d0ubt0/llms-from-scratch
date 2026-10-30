@@ -25,6 +25,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=scripts/_colab.sh
+source "$ROOT/scripts/_colab.sh"
+
 DATA="${DATA:-}"
 if [[ -z "$DATA" ]]; then
     # Si se descargó el corpus grande, entrenamos con él por defecto.
@@ -42,7 +45,7 @@ OUT_DIR="${OUT_DIR:-checkpoints}"
 
 # En Colab usamos siempre el Python del sistema: ya trae el torch compilado
 # para su GPU/TPU. Si dejáramos que uv cree un .venv, descargaría otro torch.
-if [[ -n "${COLAB_RELEASE_TAG:-}${COLAB_GPU:-}${COLAB_TPU_ADDR:-}" ]]; then
+if is_colab; then
     export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
     RUNNER=(python)
 elif [[ "${USE_UV:-1}" == "1" ]] && command -v uv >/dev/null 2>&1; then

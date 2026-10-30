@@ -14,9 +14,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=scripts/_colab.sh
+source "$ROOT/scripts/_colab.sh"
+
 # En Colab, comprobamos torch_xla antes de arrancar para dar un error claro.
 # Colab ya trae torch: instalar torch_xla sin fijar versión puede reemplazarlo.
-if [[ -n "${COLAB_RELEASE_TAG:-}${COLAB_GPU:-}${COLAB_TPU_ADDR:-}" ]]; then
+if is_colab; then
     if ! python -c "import torch_xla" >/dev/null 2>&1; then
         TORCH_VERSION="$(python -c 'import torch; print(torch.__version__.split("+")[0])')"
         echo "Error: falta torch_xla (o no coincide con torch)." >&2
