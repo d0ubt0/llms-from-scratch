@@ -221,21 +221,21 @@ def build_loaders(
             "--val-frac y --test-frac deben ser >= 0 y sumar menos de 1."
         )
 
-    # Cortes por caracteres: train | val | test.
+    print(f"Tokenizando {len(text):,} caracteres...")
+
+    # Cortes por caracteres: train | val | test. Se guardan como índices para
+    # no duplicar el corpus en memoria con slices.
     n = len(text)
     val_start = int(n * (1 - args.val_frac - args.test_frac))
     test_start = int(n * (1 - args.test_frac))
-    train_text = text[:val_start]
-    val_text = text[val_start:test_start]
-    test_text = text[test_start:] if args.test_frac > 0 else ""
 
     stride = args.stride or config.context_length
 
-    def make_dataset(part: str) -> LLMDataset | None:
-        if not part:
+    def make_dataset(start: int, end: int) -> LLMDataset | None:
+        if end <= start:
             return None
-        dataset = LLMDataset.from_text(
-            part, tokenizer, config.context_length, stride
+        dataset = LLMDataset.from_range(
+            text, start, end, tokenizer, config.context_length, stride
         )
         return dataset if len(dataset) > 0 else None
 
@@ -251,15 +251,15 @@ def build_loaders(
             pin_memory=device.type == "cuda",
         )
 
-    train_dataset = make_dataset(train_text)
+    train_dataset = make_dataset(0, val_start)
     if train_dataset is None:
         raise SystemExit(
             "El split de train es más corto que context_length. "
             "Usa más datos o baja la configuración."
         )
 
-    val_dataset = make_dataset(val_text)
-    test_dataset = make_dataset(test_text)
+    val_dataset = make_dataset(val_start, test_start)
+    test_dataset = make_dataset(test_start, n) if args.test_frac > 0 else None
 
     drop_last = len(train_dataset) >= args.batch_size
     steps_per_epoch = len(train_dataset) // args.batch_size if drop_last else 1
