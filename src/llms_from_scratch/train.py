@@ -3,6 +3,11 @@
 Uso local (CPU o CUDA):
     uv run python -m llms_from_scratch.train --data data/don_quijote.txt
 
+Con un tokenizer BPE entrenado con scripts/train_tokenizer.py (ajusta
+automáticamente `vocab_size` al del tokenizer):
+    uv run python -m llms_from_scratch.train --data data/corpus_es.txt \
+        --tokenizer checkpoints/tokenizer/tokenizer.json
+
 En Colab (no reinstales torch: Colab ya trae el suyo optimizado):
     !bash scripts/train.sh --epochs 3          # GPU o CPU
     !bash scripts/train_tpu.sh --epochs 3      # TPU (requiere torch_xla)
@@ -29,7 +34,11 @@ from torch.utils.data import DataLoader
 from llms_from_scratch.config import Config, get_config
 from llms_from_scratch.data import LLMDataset
 from llms_from_scratch.llm import LLM
-from llms_from_scratch.tokenizer import Tokenizer, get_tokenizer
+from llms_from_scratch.tokenizer import (
+    TextTokenizer,
+    get_hf_tokenizer,
+    get_tokenizer,
+)
 
 # Se rellenan solo cuando se entrena en TPU (torch_xla).
 XM = None
@@ -51,6 +60,15 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Entrena el LLM desde cero")
 
     parser.add_argument("--data", type=Path, default=Path("data/don_quijote.txt"))
+    parser.add_argument(
+        "--tokenizer",
+        type=Path,
+        default=None,
+        help=(
+            "tokenizer.json de un BPE entrenado con scripts/train_tokenizer.py "
+            "(por defecto se usa el tokenizer GPT-2 de tiktoken)"
+        ),
+    )
     parser.add_argument(
         "--config",
         choices=["micro", "t4", "small", "conventional"],
@@ -185,7 +203,7 @@ def load_text(path: Path) -> str:
 
 def build_loaders(
     args: argparse.Namespace,
-    tokenizer: Tokenizer,
+    tokenizer: TextTokenizer,
     config: Config,
     device: torch.device,
     use_xla: bool,
@@ -316,6 +334,7 @@ def save_checkpoint(
     optimizer: torch.optim.Optimizer,
     scheduler: torch.optim.lr_scheduler.LambdaLR,
     config: Config,
+    tokenizer_path: Path | None,
     epoch: int,
     step: int,
     val_loss: float,
@@ -327,6 +346,8 @@ def save_checkpoint(
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "config": config_to_dict(config),
+        # generate.py lo usa para reconstruir los ids del vocabulario correcto.
+        "tokenizer": None if tokenizer_path is None else str(tokenizer_path),
         "epoch": epoch,
         "step": step,
         "val_loss": val_loss,
@@ -405,6 +426,15 @@ def train(args: argparse.Namespace) -> None:
 
     tokenizer = get_tokenizer("gpt2")
     config = get_config(args.config)
+
+    if args.tokenizer is not None:
+        tokenizer = get_hf_tokenizer(args.tokenizer)
+        if tokenizer.vocab_size != config.vocab_size:
+            print(
+                f"Vocabulario: {config.vocab_size:,} (config {args.config}) -> "
+                f"{tokenizer.vocab_size:,} (tokenizer propio)"
+            )
+        config.vocab_size = tokenizer.vocab_size
 
     print(f"Datos: {args.data}")
     print(
@@ -504,6 +534,7 @@ def train(args: argparse.Namespace) -> None:
             optimizer,
             scheduler,
             config,
+            args.tokenizer,
             epoch,
             global_step,
             val_loss,
@@ -516,6 +547,7 @@ def train(args: argparse.Namespace) -> None:
                 optimizer,
                 scheduler,
                 config,
+                args.tokenizer,
                 epoch,
                 global_step,
                 val_loss,

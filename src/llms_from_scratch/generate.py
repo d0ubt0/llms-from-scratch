@@ -3,6 +3,9 @@
 Uso:
     uv run python -m llms_from_scratch.generate "En un lugar de la Mancha"
 
+El tokenizer se toma del propio checkpoint (si se entrenó con
+`--tokenizer`); si no, se usa el GPT-2 de tiktoken.
+
 En TPU:
     PJRT_DEVICE=TPU uv run python -m llms_from_scratch.generate "..." --device xla
 """
@@ -19,10 +22,14 @@ import torch.nn.functional as F
 from llms_from_scratch.config import Config
 from llms_from_scratch.llm import LLM
 from llms_from_scratch.pretrained import load_pretrained_gpt2
-from llms_from_scratch.tokenizer import Tokenizer, get_tokenizer
+from llms_from_scratch.tokenizer import (
+    EOS_TOKEN,
+    TextTokenizer,
+    get_hf_tokenizer,
+    get_tokenizer,
+)
 
 DEFAULT_CHECKPOINT_DIR = Path("checkpoints")
-EOS_TOKEN = "<|endoftext|>"
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,6 +52,13 @@ def parse_args() -> argparse.Namespace:
         metavar="MODELO",
         help="Usa pesos oficiales de Hugging Face en vez de un checkpoint "
         "(por defecto gpt2; también gpt2-medium, gpt2-large, gpt2-xl)",
+    )
+    parser.add_argument(
+        "--tokenizer",
+        type=Path,
+        default=None,
+        help="tokenizer.json a usar (por defecto el guardado en el checkpoint; "
+        "si no hay, el GPT-2 de tiktoken)",
     )
     parser.add_argument(
         "--device", choices=["auto", "cpu", "cuda", "xla"], default="auto"
@@ -125,10 +139,32 @@ def load_model(
     return model, config, checkpoint
 
 
+def resolve_tokenizer(path: Path | None, checkpoint: dict) -> TextTokenizer:
+    """Usa el tokenizer con el que se entrenó (si está guardado) o GPT-2."""
+    saved = checkpoint.get("tokenizer")
+    if path is None and saved:
+        path = Path(saved)
+        if not path.exists():
+            raise SystemExit(
+                f"El checkpoint se entrenó con el tokenizer {saved}, que ya no "
+                "existe. Pasá --tokenizer con la ruta correcta."
+            )
+
+    if path is None:
+        return get_tokenizer("gpt2")
+
+    tokenizer = get_hf_tokenizer(path)
+    print(
+        f"Tokenizer: {path} | vocabulario {tokenizer.vocab_size:,}",
+        file=sys.stderr,
+    )
+    return tokenizer
+
+
 @torch.no_grad()
 def generate(
     model: LLM,
-    tokenizer: Tokenizer,
+    tokenizer: TextTokenizer,
     prompt: str,
     config: Config,
     device: torch.device,
@@ -153,7 +189,7 @@ def generate(
     tokens = torch.tensor([prompt_ids], dtype=torch.long, device=device)
     prompt_len = tokens.size(1)
 
-    eos_id = tokenizer.encode(EOS_TOKEN)[0]
+    eos_id = tokenizer.special_token_id(EOS_TOKEN)
 
     for _ in range(max_new_tokens):
         logits = model(tokens[:, -config.context_length :])[:, -1, :]
@@ -171,7 +207,7 @@ def generate(
             probs = F.softmax(logits, dim=-1)
             next_token = torch.multinomial(probs, num_samples=1)
 
-        if next_token.item() == eos_id:
+        if eos_id is not None and next_token.item() == eos_id:
             break
 
         tokens = torch.cat([tokens, next_token], dim=1)
@@ -187,7 +223,13 @@ def main() -> None:
 
     device, xm = setup_device(args.device)
     if args.pretrained is not None:
+        if args.tokenizer is not None:
+            raise SystemExit(
+                "--tokenizer no aplica a --pretrained: los pesos oficiales de "
+                "GPT-2 usan el tokenizer GPT-2 de tiktoken."
+            )
         model, config = load_pretrained_gpt2(args.pretrained, device=device)
+        tokenizer: TextTokenizer = get_tokenizer("gpt2")
         print(
             f"Pesos: {args.pretrained} (Hugging Face) | dispositivo {device}",
             file=sys.stderr,
@@ -195,13 +237,13 @@ def main() -> None:
     else:
         checkpoint_path = resolve_checkpoint(args.checkpoint)
         model, config, checkpoint = load_model(checkpoint_path, device)
+        tokenizer = resolve_tokenizer(args.tokenizer, checkpoint)
 
         epoch = checkpoint.get("epoch", 0) + 1
         print(
             f"Checkpoint: {checkpoint_path} | época {epoch} | dispositivo {device}",
             file=sys.stderr,
         )
-    tokenizer = get_tokenizer("gpt2")
 
     text = generate(
         model=model,

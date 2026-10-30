@@ -29,7 +29,7 @@ import sys
 # Solo instalamos lo que no venga ya en Colab; torch y torchvision se respetan.
 missing = [
     package
-    for package in ("tiktoken", "pandas")
+    for package in ("tiktoken", "pandas", "tokenizers")
     if importlib.util.find_spec(package) is None
 ]
 if missing:
@@ -40,11 +40,13 @@ PY
     python - <<'PY'
 import pandas
 import tiktoken
+import tokenizers
 import torch
 
 print(f"torch {torch.__version__} (preinstalado de Colab)")
 print(f"CUDA disponible: {torch.cuda.is_available()}")
 print(f"tiktoken {tiktoken.__version__}")
+print(f"tokenizers {tokenizers.__version__}")
 print(f"pandas {pandas.__version__}")
 PY
 
@@ -69,11 +71,13 @@ uv sync
 uv run python - <<'PY'
 import pandas
 import tiktoken
+import tokenizers
 import torch
 
 print(f"torch {torch.__version__}")
 print(f"CUDA disponible: {torch.cuda.is_available()}")
 print(f"tiktoken {tiktoken.__version__}")
+print(f"tokenizers {tokenizers.__version__}")
 print(f"pandas {pandas.__version__}")
 PY
 

@@ -3,14 +3,14 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 
-from llms_from_scratch.tokenizer import Tokenizer
+from llms_from_scratch.tokenizer import TextTokenizer
 
 
 class LLMDataset(Dataset):
     def __init__(
         self,
         path: str | Path,
-        tokenizer: Tokenizer,
+        tokenizer: TextTokenizer,
         context_length: int,
         stride: int | None = None,
     ) -> None:
@@ -21,7 +21,7 @@ class LLMDataset(Dataset):
     def from_text(
         cls,
         text: str,
-        tokenizer: Tokenizer,
+        tokenizer: TextTokenizer,
         context_length: int,
         stride: int | None = None,
     ) -> "LLMDataset":
@@ -32,7 +32,7 @@ class LLMDataset(Dataset):
     def _build(
         self,
         text: str,
-        tokenizer: Tokenizer,
+        tokenizer: TextTokenizer,
         context_length: int,
         stride: int | None,
     ) -> None:

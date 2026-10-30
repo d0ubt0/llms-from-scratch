@@ -3,7 +3,7 @@ import torch
 
 from llms_from_scratch.config import get_config
 from llms_from_scratch.llm import LLM
-from llms_from_scratch.tokenizer import Tokenizer, get_tokenizer
+from llms_from_scratch.tokenizer import get_tokenizer
 
 
 def generate_tokens(model, tokens: torch.Tensor, context_size, max_length=3):

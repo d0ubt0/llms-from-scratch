@@ -8,6 +8,7 @@
 # Variables de entorno (opcionales):
 #   DATA        corpus de entrenamiento   (data/corpus_es.txt si existe;
 #                                           si no, data/don_quijote.txt)
+#   TOKENIZER   tokenizer.json propio     (vacío = GPT-2 con tiktoken)
 #   CONFIG      micro | small             (micro)
 #   DEVICE      auto | cpu | cuda | xla   (auto)
 #   EPOCHS      número de épocas          (1)
@@ -18,6 +19,7 @@
 # Ejemplos:
 #   DATA=data/mi_corpus.txt ./scripts/train.sh
 #   DEVICE=cuda ./scripts/train.sh --epochs 5
+#   TOKENIZER=checkpoints/tokenizer/tokenizer.json ./scripts/train.sh
 #   USE_UV=0 ./scripts/train.sh   # en Colab sin uv (usa PYTHONPATH=src)
 
 set -euo pipefail
@@ -42,6 +44,7 @@ DEVICE="${DEVICE:-auto}"
 EPOCHS="${EPOCHS:-1}"
 BATCH_SIZE="${BATCH_SIZE:-4}"
 OUT_DIR="${OUT_DIR:-checkpoints}"
+TOKENIZER="${TOKENIZER:-}"
 
 # En Colab usamos siempre el Python del sistema: ya trae el torch compilado
 # para su GPU/TPU. Si dejáramos que uv cree un .venv, descargaría otro torch.
@@ -61,6 +64,10 @@ fi
 
 # Los valores efectivos (incluidos los flags pasados en "$@") los imprime
 # train.py después de parsear los argumentos.
+if [[ -n "$TOKENIZER" ]]; then
+    set -- --tokenizer "$TOKENIZER" "$@"
+fi
+
 exec "${RUNNER[@]}" -m llms_from_scratch.train \
     --data "$DATA" \
     --config "$CONFIG" \

@@ -9,6 +9,7 @@
 #
 # Variables de entorno (opcionales):
 #   CHECKPOINT       ruta al .pt        (checkpoints/best.pt o last.pt)
+#   TOKENIZER        tokenizer.json     (el guardado en el checkpoint)
 #   DEVICE           auto | cpu | cuda | xla   (auto)
 #   MAX_NEW_TOKENS   tokens a generar   (200)
 #   TEMPERATURE      temperatura        (0.8)
@@ -41,7 +42,8 @@ fi
 
 if [[ $# -eq 0 ]]; then
     echo "Uso: ./scripts/generate.sh \"tu prompt\" [opciones]" >&2
-    echo "Opciones: --checkpoint --pretrained --device --max-new-tokens --temperature --top-k --seed --greedy" >&2
+    echo "Opciones: --checkpoint --pretrained --tokenizer --device" >&2
+    echo "          --max-new-tokens --temperature --top-k --seed --greedy" >&2
     exit 1
 fi
 
@@ -53,6 +55,7 @@ if [[ "$PROMPT" == "-h" || "$PROMPT" == "--help" ]]; then
 fi
 
 CHECKPOINT="${CHECKPOINT:-}"
+TOKENIZER="${TOKENIZER:-}"
 DEVICE="${DEVICE:-auto}"
 MAX_NEW_TOKENS="${MAX_NEW_TOKENS:-200}"
 TEMPERATURE="${TEMPERATURE:-0.8}"
@@ -61,6 +64,10 @@ SEED="${SEED:-}"
 
 if [[ -n "$CHECKPOINT" ]]; then
     set -- --checkpoint "$CHECKPOINT" "$@"
+fi
+
+if [[ -n "$TOKENIZER" ]]; then
+    set -- --tokenizer "$TOKENIZER" "$@"
 fi
 
 if [[ -n "$SEED" ]]; then
