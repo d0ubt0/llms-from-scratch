@@ -1,0 +1,242 @@
+# llms-from-scratch
+
+Un GPT escrito desde cero en PyTorch. La idea era entender por dentro cómo
+funciona un LLM, así que aquí no se usa nada tipo `transformers`: la atención,
+los bloques del transformer, el bucle de entrenamiento y el muestreo de texto
+están implementados en este repo.
+
+Sobre esta misma arquitectura se pueden cargar los pesos oficiales de GPT-2 o
+entrenar modelos propios con corpus en español (viene el Quijote incluido).
+Funciona en CPU, GPU y TPU, y en Colab reutiliza el torch que ya trae el
+runtime.
+
+## Qué incluye
+
+- Modelo decoder-only con embeddings de tokens y posición, atención
+  multi-cabeza con máscara causal, feed-forward con GELU (aproximación `tanh`,
+  como usa GPT-2) y bloques pre-LayerNorm con conexiones residuales.
+- Entrenamiento con AdamW, warmup lineal y decaimiento coseno, gradient
+  clipping y precisión mixta (bf16/fp16) en CUDA. Por época guarda `last.pt`
+  y, si mejora la validación, `best.pt`. Se puede reanudar desde un checkpoint.
+- Splits de train/valid/test, con pérdida y perplexity reportadas por época.
+- Generación con muestreo por temperature y top-k, modo greedy y semilla
+  opcional.
+- Carga de los pesos oficiales de GPT-2 (`gpt2`, `gpt2-medium`, `gpt2-large`,
+  `gpt2-xl`) de Hugging Face sobre nuestra implementación.
+- Dos tokenizers a elección: el de GPT-2 (`tiktoken`) o un BPE byte-level
+  propio entrenado con 🤗 `tokenizers`. El vocabulario se ajusta solo.
+- Descargador de libros en español desde Project Gutenberg. El corpus que
+  genera lo usa el entrenamiento automáticamente.
+
+## Arquitectura
+
+El flujo completo, de tokens a logits:
+
+```
+        tokens
+          │
+          ▼
+  ┌────────────────────────────────┐
+  │  Token Emb. + Pos. Emb.        │
+  │           └──▶ Dropout         │
+  └────────────────────────────────┘
+          │
+          ▼
+  ┌────────────────────────────────────────────┐
+  │  Bloque Transformer × N   (pre-LayerNorm)  │
+  │                                            │
+  │   x ─▶ LayerNorm ─▶ Multi-Head Causal Attn │
+  │   │                                │       │
+  │   └──────────── (+) ◀─────────────┘        │
+  │   │                                        │
+  │   ├─▶ LayerNorm ─▶ FFN (GELU tanh)         │
+  │   │                            │           │
+  │   └─────────── (+) ◀───────────┘           │
+  └────────────────────────────────────────────┘
+          │
+          ▼
+  LayerNorm final ─▶ Linear (vocabulario) ─▶ logits
+```
+
+## Configuraciones del modelo
+
+| Config | `emb_dim` | Capas | Cabezas | Contexto | Parámetros | Pensado para |
+|:------:|:---------:|:-----:|:-------:|:--------:|:----------:|--------------|
+| `micro` | 128 | 4 | 4 | 256 | 13,7 M | pruebas rápidas en CPU |
+| `t4` | 256 | 6 | 8 | 256 | 30,5 M | GPU T4 de Colab (16 GB) |
+| `small` | 768 | 12 | 12 | 1 024 | 163 M | ≈ GPT-2 small |
+| `conventional` | 768 | 12 | 12 | 1 024 | 163 M | referencia GPT-2 |
+
+El vocabulario por defecto es el de GPT-2 (50 257 tokens). Si entrenas con un
+tokenizer propio, `vocab_size` se ajusta al tamaño real de su vocabulario.
+
+## Instalación
+
+Hace falta Python 3.12 y [uv](https://docs.astral.sh/uv/) (si no lo tienes:
+`curl -LsSf https://astral.sh/uv/install.sh | sh`). El script de instalación
+detecta si estás en Colab: ahí no crea entorno virtual y usa el torch del
+runtime. En local crea el `.venv` con uv e instala todo lo que hay en
+`pyproject.toml` (PyTorch, tiktoken, tokenizers, pandas, safetensors).
+
+```bash
+git clone git@github.com:d0ubt0/llms-from-scratch.git
+cd llms-from-scratch
+./scripts/setup.sh
+```
+
+## Uso
+
+El flujo típico es entrenar y luego generar con el checkpoint que salga:
+
+```bash
+./scripts/train.sh --epochs 3
+./scripts/generate.sh "En un lugar de la Mancha"
+```
+
+### Entrenar
+
+```bash
+./scripts/train.sh --epochs 5 --batch-size 8
+./scripts/train.sh --config t4 --device cuda       # GPU
+./scripts/train.sh --resume checkpoints/last.pt    # reanudar
+```
+
+Por defecto entrena sobre `data/corpus_es.txt` si existe y, si no, sobre
+`data/don_quijote.txt`. Se puede configurar con variables de entorno (todas
+tienen su flag equivalente; ver `--help`):
+
+| Variable | Descripción | Por defecto |
+|----------|-------------|-------------|
+| `DATA` | Corpus de entrenamiento (`.txt`, `.csv` o `.json`) | `data/corpus_es.txt` si existe, si no `data/don_quijote.txt` |
+| `CONFIG` | `micro` \| `t4` \| `small` \| `conventional` | `micro` |
+| `DEVICE` | `auto` \| `cpu` \| `cuda` \| `xla` | `auto` |
+| `EPOCHS` | Número de épocas | `1` |
+| `BATCH_SIZE` | Tamaño de batch | `4` |
+| `TOKENIZER` | Ruta a un `tokenizer.json` propio | GPT-2 (`tiktoken`) |
+| `OUT_DIR` | Carpeta de checkpoints | `checkpoints` |
+
+Cada checkpoint guarda también la configuración del modelo y la ruta al
+tokenizer, así que después no hay que volver a indicarlos.
+
+### Generar texto
+
+```bash
+./scripts/generate.sh "Había una vez" --max-new-tokens 100 --temperature 0.9
+./scripts/generate.sh "Hola" --greedy     # siempre elige el token más probable
+./scripts/generate.sh "Hola" --seed 42    # resultado reproducible
+```
+
+| Variable | Descripción | Por defecto |
+|----------|-------------|-------------|
+| `CHECKPOINT` | Ruta al `.pt` | `checkpoints/best.pt` o `last.pt` |
+| `TOKENIZER` | `tokenizer.json` a usar | el guardado en el checkpoint |
+| `DEVICE` | `auto` \| `cpu` \| `cuda` \| `xla` | `auto` |
+| `MAX_NEW_TOKENS` | Tokens a generar | `200` |
+| `TEMPERATURE` | Temperatura de muestreo | `0.8` |
+| `TOP_K` | Filtrado top-k | `40` |
+| `SEED` | Semilla | aleatoria |
+
+### Pesos oficiales de GPT-2
+
+Con `--pretrained` se usa un GPT-2 de Hugging Face sin entrenar nada. En los
+checkpoints originales las proyecciones son `Conv1D` y el `lm_head` está atado
+a los embeddings de tokens; `pretrained.py` se encarga de traducir eso a las
+capas de este repo.
+
+```bash
+./scripts/generate.sh "Hello, my name is" --pretrained gpt2
+./scripts/generate.sh "En un lugar de la Mancha" --pretrained gpt2-medium
+```
+
+### Tokenizer propio
+
+`scripts/train_tokenizer.py` entrena un BPE byte-level (estilo GPT-2) sobre un
+corpus en texto plano. Al ser byte-level, cualquier texto se codifica sin
+tokens `<unk>`. Deja `tokenizer.json` y un resumen de la configuración en
+`tokenizer_info.json`:
+
+```bash
+uv run python scripts/train_tokenizer.py \
+    --data data/corpus_es.txt --vocab-size 32_000 --out checkpoints/tokenizer
+
+./scripts/train.sh --tokenizer checkpoints/tokenizer/tokenizer.json
+```
+
+### Corpus en español
+
+`scripts/download_corpus.py` descarga libros en español desde Project
+Gutenberg (usa la API de Gutendex y, si no responde, el catálogo oficial).
+Quita las cabeceras de licencia, descarta diccionarios y gramáticas, y separa
+cada libro con `<|endoftext|>`:
+
+```bash
+uv run python scripts/download_corpus.py --target-chars 25_000_000
+```
+
+El resultado queda en `data/corpus_es.txt`, que `train.sh` coge solo si
+existe.
+
+### Colab y TPU
+
+En Colab basta con los mismos scripts:
+
+```bash
+!bash scripts/setup.sh
+!bash scripts/train.sh --epochs 3
+!bash scripts/generate.sh "En un lugar de la Mancha"
+```
+
+Para TPU se usa PyTorch/XLA. `torch_xla` tiene que ser de la misma versión que
+el torch instalado:
+
+```bash
+!pip install "torch_xla==$(python -c 'import torch; print(torch.__version__.split("+")[0])')"
+!bash scripts/train_tpu.sh --epochs 3
+```
+
+## Estructura del proyecto
+
+```
+llms-from-scratch/
+├── data/
+│   └── don_quijote.txt          # corpus por defecto (Project Gutenberg)
+├── examples/                    # notebooks y scripts didácticos
+├── scripts/
+│   ├── setup.sh                 # prepara el entorno (uv o Colab)
+│   ├── train.sh                 # entrena en CPU/CUDA
+│   ├── train_tpu.sh             # entrena en TPU (torch_xla)
+│   ├── generate.sh              # genera texto desde un checkpoint
+│   ├── download_corpus.py       # corpus en español desde Gutenberg
+│   └── train_tokenizer.py       # tokenizer BPE byte-level propio
+└── src/llms_from_scratch/
+    ├── transformer/
+    │   ├── attention.py         # atención multi-cabeza causal
+    │   ├── ff.py                # feed-forward (GELU tanh)
+    │   └── model.py             # bloque Transformer (pre-LN + residuales)
+    ├── config.py                # configuraciones (micro, t4, small, …)
+    ├── llm.py                   # modelo completo (embeddings → logits)
+    ├── data.py                  # dataset con ventanas deslizantes
+    ├── tokenizer.py             # GPT-2 (tiktoken) y BPE propio (HF)
+    ├── train.py                 # bucle de entrenamiento
+    ├── generate.py              # muestreo (temperature, top-k, greedy)
+    ├── pretrained.py            # carga de los pesos oficiales de GPT-2
+    └── cleaning_data.py         # limpieza de mensajes (JSON/CSV → CSV)
+```
+
+## Ejemplos
+
+En `examples/` va todo el material previo, por si se quiere seguir el proceso
+paso a paso antes de mirar el código del paquete:
+
+- `learn_the_basics.py`, `pytorch_1.py`, `pytorch_2.py`: tensores, autograd y
+  fundamentos de PyTorch.
+- `mnist_numbers.ipynb`: una red neuronal completa sobre MNIST.
+- `tokens.ipynb`: tokenización paso a paso.
+- `attention.py` / `attention.ipynb`: atención multi-cabeza desde cero.
+- `shortcut_connection.py`: conexiones residuales.
+- `data_preprocessing.py`: preprocesado de datos.
+- `gpt.py`: prototipo del modelo GPT.
+
+---
+
+Escrito por [sepabonn](mailto:sepabonn@unal.edu.co).
