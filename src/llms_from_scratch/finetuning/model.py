@@ -91,7 +91,10 @@ class SpamClassifier(nn.Module):
         backbone, config = load_pretrained_gpt2(
             resolve_model_name(model), device=device
         )
-        return cls(backbone, drop_rate=drop_rate), config
+        classifier = cls(backbone, drop_rate=drop_rate)
+        # La cabeza se crea en CPU después del backbone: hay que moverla también.
+        classifier.to(device)
+        return classifier, config
 
     @property
     def emb_dim(self) -> int:
