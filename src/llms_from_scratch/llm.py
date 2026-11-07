@@ -20,16 +20,21 @@ class LLM(nn.Module):
         self.final_norm = nn.LayerNorm(config.emb_dim)
         self.out_projection = nn.Linear(config.emb_dim, config.vocab_size, bias=False)
 
-    def forward(self, input: Tensor) -> Tensor:
-        batch_size, seq_len = input.shape
+    def forward_hidden(self, input: Tensor) -> Tensor:
+        """Devuelve los estados ocultos antes de proyectar al vocabulario.
+
+        Lo usa el clasificador de fine-tuning para quedarse con el último
+        token en vez de calcular logits de todo el vocabulario.
+        """
+        _, seq_len = input.shape
 
         tokens_embeds = self.token_embedding(input)
         posit_embeds = self.positional_embedding(arange(seq_len, device=input.device))
 
-        embeds = tokens_embeds + posit_embeds
+        embeds = self.dropout(tokens_embeds + posit_embeds)
 
-        embeds = self.dropout(embeds)
         embeds = self.transformers(embeds)
-        embeds = self.final_norm(embeds)
+        return self.final_norm(embeds)
 
-        return self.out_projection(embeds)
+    def forward(self, input: Tensor) -> Tensor:
+        return self.out_projection(self.forward_hidden(input))

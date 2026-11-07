@@ -16,3 +16,7 @@ checkpoints/
 data/corpus_es.txt
 data/corpus_*.txt
 data/pg_catalog.csv
+
+# Dataset SMS spam descargado por finetuning/data.py
+sms_spam_collection/
+sms_spam_collection.zip

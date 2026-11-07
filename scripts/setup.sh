@@ -6,6 +6,10 @@
 #
 # Uso:
 #   ./scripts/setup.sh
+#
+# Variables de entorno (opcionales):
+#   LLMS_COLAB  1 fuerza modo Colab (sin .venv; útil por SSH)
+#   PYTHON_BIN  intérprete alternativo (python)
 
 set -euo pipefail
 
@@ -20,8 +24,9 @@ source "$ROOT/scripts/_colab.sh"
 if is_colab; then
     echo "Colab detectado: se usa el torch preinstalado (sin uv sync)."
     export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
+    PYTHON_BIN="${PYTHON_BIN:-python}"
 
-    python - <<'PY'
+    "$PYTHON_BIN" - <<'PY'
 import importlib.util
 import subprocess
 import sys
@@ -29,7 +34,13 @@ import sys
 # Solo instalamos lo que no venga ya en Colab; torch y torchvision se respetan.
 missing = [
     package
-    for package in ("tiktoken", "pandas", "tokenizers")
+    for package in (
+        "tiktoken",
+        "pandas",
+        "tokenizers",
+        "safetensors",
+        "huggingface_hub",
+    )
     if importlib.util.find_spec(package) is None
 ]
 if missing:
@@ -37,23 +48,28 @@ if missing:
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", *missing])
 PY
 
-    python - <<'PY'
+    "$PYTHON_BIN" - <<'PY'
 import pandas
 import tiktoken
 import tokenizers
 import torch
+import huggingface_hub
+import safetensors
 
 print(f"torch {torch.__version__} (preinstalado de Colab)")
 print(f"CUDA disponible: {torch.cuda.is_available()}")
 print(f"tiktoken {tiktoken.__version__}")
 print(f"tokenizers {tokenizers.__version__}")
 print(f"pandas {pandas.__version__}")
+print(f"huggingface_hub {huggingface_hub.__version__}")
+print(f"safetensors {safetensors.__version__}")
 PY
 
     echo
     echo "Entorno listo."
     echo "Entrenar en GPU/CPU:  bash scripts/train.sh --epochs 1"
     echo "Entrenar en TPU:      bash scripts/train_tpu.sh --epochs 1"
+    echo "Fine-tuning spam:     bash scripts/finetune_spam.sh --model small --device cuda"
     echo "Generar texto:        bash scripts/generate.sh \"En un lugar de la Mancha\""
     exit 0
 fi

@@ -15,6 +15,7 @@
 #   BATCH_SIZE  tamaño de batch           (4)
 #   OUT_DIR     carpeta de checkpoints    (checkpoints)
 #   USE_UV      1 usa uv, 0 usa python    (1; en Colab siempre se usa python)
+#   PYTHON_BIN  intérprete alternativo    (python)
 #
 # Ejemplos:
 #   DATA=data/mi_corpus.txt ./scripts/train.sh
@@ -50,7 +51,7 @@ TOKENIZER="${TOKENIZER:-}"
 # para su GPU/TPU. Si dejáramos que uv cree un .venv, descargaría otro torch.
 if is_colab; then
     export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
-    RUNNER=(python)
+    RUNNER=("${PYTHON_BIN:-python}")
 elif [[ "${USE_UV:-1}" == "1" ]] && command -v uv >/dev/null 2>&1; then
     RUNNER=(uv run python)
 else
@@ -58,7 +59,7 @@ else
     if [[ -x "$ROOT/.venv/bin/python" ]]; then
         RUNNER=("$ROOT/.venv/bin/python")
     else
-        RUNNER=(python)
+        RUNNER=("${PYTHON_BIN:-python}")
     fi
 fi
 

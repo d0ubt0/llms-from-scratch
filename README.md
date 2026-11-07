@@ -25,6 +25,9 @@ runtime.
   `gpt2-xl`) de Hugging Face sobre nuestra implementación.
 - Dos tokenizers a elección: el de GPT-2 (`tiktoken`) o un BPE byte-level
   propio entrenado con 🤗 `tokenizers`. El vocabulario se ajusta solo.
+- Fine-tuning de clasificación spam/ham sobre GPT-2: linear probe, últimos
+  bloques o modelo completo, padding dinámico o fijo y barrido automático de
+  configuraciones con métricas de accuracy, precision, recall y F1.
 - Descargador de libros en español desde Project Gutenberg. El corpus que
   genera lo usa el entrenamiento automáticamente.
 
@@ -148,6 +151,95 @@ capas de este repo.
 ./scripts/generate.sh "En un lugar de la Mancha" --pretrained gpt2-medium
 ```
 
+### Fine-tuning para clasificación (SMS spam)
+
+`llms_from_scratch.finetuning` adapta GPT-2 a clasificación binaria spam/ham
+con el dataset SMS Spam Collection. Incluye descarga, deduplicación, split
+estratificado 70/10/20, padding dinámico o fijo y métricas de accuracy,
+precision, recall y F1.
+
+El entrenamiento es parcial por defecto: se congelan los embeddings y todos
+los bloques menos los dos últimos, y solo se ajustan esos bloques,
+`final_norm` y la cabeza de clasificación. También se puede entrenar solo la
+cabeza (linear probe) o el modelo completo.
+
+```bash
+# GPT-2 small + últimos 2 bloques (configuración por defecto)
+./scripts/finetune_spam.sh
+
+# Linear probe con GPT-2 medium
+./scripts/finetune_spam.sh --model medium --trainable head
+
+# Padding fijo y dataset balanceado
+./scripts/finetune_spam.sh --padding fixed --balance undersample
+
+# Fine-tuning completo de GPT-2 small
+./scripts/finetune_spam.sh --trainable full
+```
+
+| `--model` | Pesos de Hugging Face | Parámetros |
+|:---------:|:---------------------:|:----------:|
+| `small` | `gpt2` | 124 M |
+| `medium` | `gpt2-medium` | 355 M |
+| `large` | `gpt2-large` | 774 M |
+| `xl` | `gpt2-xl` | 1.5 B |
+
+| `--trainable` | Qué se entrena |
+|:-------------:|----------------|
+| `head` | solo la cabeza de clasificación (linear probe) |
+| `last_block` | último bloque + `final_norm` + cabeza |
+| `last_2_blocks` | últimos 2 bloques + `final_norm` + cabeza |
+| `last_4_blocks` | últimos 4 bloques + `final_norm` + cabeza |
+| `full` | todo el modelo |
+
+Para cualquier otro número de bloques se puede usar `--unfreeze-last N`.
+
+Para clasificar mensajes con el checkpoint entrenado:
+
+```bash
+uv run python -m llms_from_scratch.finetuning.predict \
+    --checkpoint checkpoints/spam/best.pt \
+    "Congratulations! You won a prize. Call now!"
+```
+
+Para comparar configuraciones (padding, scope, balance y modelo) sobre el
+mismo split y semilla:
+
+```bash
+# Comparación corta: head vs últimos 2 bloques con padding dinámico
+uv run python -m llms_from_scratch.finetuning.experiments --preset quick
+
+# Matriz completa con GPT-2 small
+uv run python -m llms_from_scratch.finetuning.experiments --preset full
+
+# Combinación a medida
+uv run python -m llms_from_scratch.finetuning.experiments \
+    --models small medium \
+    --scopes head last_2_blocks \
+    --paddings dynamic fixed \
+    --balances none undersample
+```
+
+Cada corrida guarda `metrics.json` y `history.csv` en su propia carpeta. El
+barrido agrega todo en `checkpoints/experiments/results.csv` y una tabla
+legible en `results.md`, ordenada por F1 de test.
+
+Una corrida de referencia con GPT-2 small en CPU (3 épocas, `seed=42`,
+padding dinámico, sin balancear) dio:
+
+| `--trainable` | Parámetros entrenables | Test F1 |
+|:-------------:|:----------------------:|:-------:|
+| `head` | 3 074 | 0.9125 |
+| `last_2_blocks` | 14,2 M | 0.9688 |
+
+Los números exactos dependen de la semilla y del hardware.
+
+Las pruebas de datos y modelo (sin descargar GPT-2) se ejecutan con:
+
+```bash
+uv run python -m unittest discover -s tests -v
+```
+
 ### Tokenizer propio
 
 `scripts/train_tokenizer.py` entrena un BPE byte-level (estilo GPT-2) sobre un
@@ -194,6 +286,62 @@ el torch instalado:
 !bash scripts/train_tpu.sh --epochs 3
 ```
 
+### Colab por SSH (sin `.venv`)
+
+Si te conectas al runtime de Colab por SSH, conviene reutilizar el `torch`
+preinstalado (compilado para la GPU del runtime) y no crear un `.venv`.
+Fuerza el modo Colab para que los scripts usen el `python` del sistema:
+
+```bash
+export LLMS_COLAB=1
+export PYTHONPATH="$PWD/src${PYTHONPATH:+:$PYTHONPATH}"
+```
+
+Si el `python` del shell SSH no es el mismo que trae el runtime (por ejemplo,
+otro entorno de conda), indica el intérprete correcto:
+
+```bash
+export PYTHON_BIN=/usr/local/bin/python3
+```
+
+Comprueba que el runtime tiene GPU antes de entrenar:
+
+```bash
+python - <<'PY'
+import torch
+print("torch:", torch.__version__)
+print("CUDA:", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("GPU:", torch.cuda.get_device_name(0))
+PY
+```
+
+Prepara solo las dependencias que falten (sin tocar `torch` ni `torchvision`, y
+sin crear `.venv`):
+
+```bash
+LLMS_COLAB=1 bash scripts/setup.sh
+```
+
+No uses `uv run` ni `uv sync` en el SSH de Colab: crean `.venv` y pueden
+reinstalar torch. Para entrenar:
+
+```bash
+bash scripts/finetune_spam.sh \
+    --model small --trainable last_2_blocks --device cuda
+```
+
+O directamente, sin el wrapper:
+
+```bash
+python -m llms_from_scratch.finetuning.train \
+    --model small --trainable last_2_blocks --device cuda
+```
+
+Recuerda que en Colab `/content` se pierde al desconectar el runtime. Copia
+`checkpoints/` a Google Drive o a tu máquina con `scp` antes de cerrar la
+sesión.
+
 ## Estructura del proyecto
 
 ```
@@ -205,14 +353,23 @@ llms-from-scratch/
 │   ├── setup.sh                 # prepara el entorno (uv o Colab)
 │   ├── train.sh                 # entrena en CPU/CUDA
 │   ├── train_tpu.sh             # entrena en TPU (torch_xla)
+│   ├── finetune_spam.sh         # fine-tuning de clasificación SMS spam
 │   ├── generate.sh              # genera texto desde un checkpoint
 │   ├── download_corpus.py       # corpus en español desde Gutenberg
 │   └── train_tokenizer.py       # tokenizer BPE byte-level propio
+├── tests/
+│   └── test_finetuning.py       # pruebas de datos, collate y scopes
 └── src/llms_from_scratch/
     ├── transformer/
     │   ├── attention.py         # atención multi-cabeza causal
     │   ├── ff.py                # feed-forward (GELU tanh)
     │   └── model.py             # bloque Transformer (pre-LN + residuales)
+    ├── finetuning/
+    │   ├── data.py              # dataset, splits y padding dinámico/fijo
+    │   ├── model.py             # GPT-2 + cabeza de clasificación
+    │   ├── train.py             # entrenamiento y checkpoints
+    │   ├── experiments.py       # barrido de configuraciones
+    │   └── predict.py           # inferencia spam/ham
     ├── config.py                # configuraciones (micro, t4, small, …)
     ├── llm.py                   # modelo completo (embeddings → logits)
     ├── data.py                  # dataset con ventanas deslizantes
