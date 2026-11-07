@@ -224,21 +224,53 @@ Cada corrida guarda `metrics.json` y `history.csv` en su propia carpeta. El
 barrido agrega todo en `checkpoints/experiments/results.csv` y una tabla
 legible en `results.md`, ordenada por F1 de test.
 
-Una corrida de referencia con GPT-2 small en CPU (3 épocas, `seed=42`,
-padding dinámico, sin balancear) dio:
-
-| `--trainable` | Parámetros entrenables | Test F1 |
-|:-------------:|:----------------------:|:-------:|
-| `head` | 3 074 | 0.9125 |
-| `last_2_blocks` | 14,2 M | 0.9688 |
-
-Los números exactos dependen de la semilla y del hardware.
+El resumen de los experimentos, con una figura y conclusiones, está en
+[Resultados de los experimentos](#resultados-de-los-experimentos).
 
 Las pruebas de datos y modelo (sin descargar GPT-2) se ejecutan con:
 
 ```bash
 uv run python -m unittest discover -s tests -v
 ```
+
+### Resultados de los experimentos
+
+Probamos 16 formas de entrenar el modelo con los mismos mensajes SMS: 3.611
+para entrenar, 516 para validar y 1.031 para probar.
+
+![Resultado según qué parte del modelo entrenamos](docs/figures/f1_por_scope.png)
+
+| Qué parte entrenamos | Resultado | Tiempo |
+|:---------------------|----------:|-------:|
+| Solo la capa final | 0.908 | 24 s |
+| Último bloque | 0.960 | 150 s |
+| Últimos 2 bloques | 0.973 | 77 s |
+| Modelo completo | 0.981 | 292 s |
+
+**Lo que saco en limpio**
+
+- Cuanto más parte del modelo entrenamos, mejor sale, pero también tarda más.
+- **La opción más equilibrada es entrenar los últimos 2 bloques**: casi el
+  mismo resultado que el modelo completo en una cuarta parte del tiempo.
+- Entrenar solo la capa final es rápido y sirve para empezar, pero falla más
+  con mensajes normales.
+- Preparar los mensajes de forma dinámica entrena más rápido y da un
+  resultado parecido; solo con el último bloque salió algo mejor la forma
+  fija.
+- Quitar mensajes normales para compensar la cantidad de spam no ayudó: el
+  modelo acertó menos.
+
+El conjunto de prueba es pequeño, así que diferencias de menos de 1-2 puntos
+pueden ser casualidad. La tabla con todas las corridas está en
+[`results.md`](checkpoints/experiments/results.md).
+
+La figura se regenera con:
+
+```bash
+python scripts/plot_experiments.py
+```
+
+Necesita `pandas`, `matplotlib` y `seaborn` instalados en el sistema.
 
 ### Tokenizer propio
 
@@ -348,6 +380,8 @@ sesión.
 llms-from-scratch/
 ├── data/
 │   └── don_quijote.txt          # corpus por defecto (Project Gutenberg)
+├── docs/
+│   └── figures/                 # figuras de los experimentos (seaborn)
 ├── examples/                    # notebooks y scripts didácticos
 ├── scripts/
 │   ├── setup.sh                 # prepara el entorno (uv o Colab)
@@ -356,6 +390,7 @@ llms-from-scratch/
 │   ├── finetune_spam.sh         # fine-tuning de clasificación SMS spam
 │   ├── generate.sh              # genera texto desde un checkpoint
 │   ├── download_corpus.py       # corpus en español desde Gutenberg
+│   ├── plot_experiments.py      # figuras de results.csv con seaborn
 │   └── train_tokenizer.py       # tokenizer BPE byte-level propio
 ├── tests/
 │   └── test_finetuning.py       # pruebas de datos, collate y scopes
